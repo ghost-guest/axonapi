@@ -1,0 +1,84 @@
+# Public Benefit Phase 1 Log
+
+- 18:46 Initial workspace inspection showed the target directory was empty.
+- 18:51 User clarified the base project is `looplj/axonhub` with `Aether` and `metapi` as references.
+- 19:01 Direct `git clone` to GitHub repeatedly timed out on HTTPS transport.
+- 19:05 Switched to GitHub API tarball download and unpacked `axonhub`, `Aether`, and `metapi` locally.
+- 19:08 Confirmed AxonHub already includes multi-protocol gateway entrypoints, usage logs, tracing, model sync, retry, and load-balancing primitives.
+- 19:15 Compared `Aether` provider ops patterns and `metapi` token routing/site proxy runtime patterns to identify reusable ideas.
+- 19:20 Chose a minimal first phase: build a dedicated public-benefit config/runtime control plane without touching GraphQL schema generation.
+- 19:28 Implemented JSON-backed persistence via `SystemService`, admin REST endpoints, and initial tests.
+- 19:45 Extended the routing layer with protocol-aware fallback model selection so Claude and Codex traffic can rotate across configured fallback models without changing existing handlers.
+- 20:05 Added upstream runtime-aware candidate filtering and model discovery preference so healthy sites with matching model families are preferred during selection.
+- 20:28 Added scheduled runtime sync service and upstream-to-channel materialization to move the feature from config-only into executable backend behavior.
+- 08:10 Downloaded `ccNexus` locally via GitHub tarball and inspected its Claude/Codex behavior, confirming the main reusable idea is same-session endpoint continuity with transparent failover.
+- 08:20 Reviewed AxonHub's existing trace/thread/session and reasoning-signature transport support; identified that protocol continuity already existed and the missing part was session-affinity routing.
+- 08:35 Added public-benefit session affinity config and in-memory binding support for Claude/Codex sessions, keyed by trace/thread/session context.
+- 08:45 Added a dedicated session-affinity selector before load balancing so sticky upstreams are preferred without replacing AxonHub's existing retry/failover chain.
+- 08:52 Corrected an unsafe binding point: moved sticky-upstream writes from outbound request creation to successful LLM response handling to avoid pinning failed upstreams.
+- 08:58 Added targeted tests for session affinity and reran focused `go test` suites for `internal/server/biz` and `internal/server/orchestrator`.
+- 09:20 Reviewed Aether quota/provider refresh code paths and extracted the reusable idea: provider actions should be strategy-driven and explicit per account instead of coupling everything to full sync.
+- 09:35 Changed provider auto check-in semantics so it respects `check_in_cron` / daily window instead of signing in on every periodic sync.
+- 09:45 Added single-provider runtime actions and REST endpoints for manual refresh/check-in to support frontend operations.
+- 10:05 Added the first AxonHub-style admin page for `公益供应商`, wired into route/sidebar/locale config, and kept it on top of existing REST endpoints instead of forcing a new GraphQL surface.
+- 10:18 Reran focused backend tests after the provider runtime changes; frontend structure was updated but not build-verified in this round.
+- 10:32 Finished wiring the remaining AxonHub-style admin pages for `公益上游`, `聚合出口`, and a new `公益总览` entry so the module is navigable end-to-end from the sidebar.
+- 10:38 Found and fixed a real frontend form-context bug in the outbound settings page that would have caused runtime errors despite the page existing in code.
+- 10:45 Audited public-benefit runtime accounting and identified a gap: successful routed requests were not updating upstream usage/runtime totals, which would make dashboard and health views drift from reality.
+- 10:55 Added runtime usage recording from `UsageLogService` into public-benefit runtime state for `public-benefit/<upstream-id>` channels, including daily snapshot updates and `last_switch_at`.
+- 11:02 Corrected a stats semantics issue in dashboard aggregation where upstream totals and daily snapshots were being added together, causing double-counted totals.
+- 11:10 Manually updated `frontend/src/routeTree.gen.ts` because frontend dependencies were not installed in the environment and the TanStack Router generator could not be executed.
+- 11:18 Ran focused `go test` suites for `internal/server/biz` and `internal/server/orchestrator`; both passed after the latest runtime accounting and selector changes.
+- 19:53 Installed frontend dependencies with `pnpm install` and confirmed the local `vite` binary became available.
+- 20:05 Ran real frontend packaging with `./node_modules/.bin/vite build`; build passed and included the new public-benefit pages.
+- 20:18 Used `tsc --noEmit` to isolate public-benefit-specific typing problems, then adjusted the new upstream/outbound forms to use string-backed numeric inputs with explicit conversion on submit.
+- 20:32 Rechecked `tsc` output and confirmed there were no remaining `public-benefit`-scoped type errors; remaining frontend type errors belong to pre-existing repository-wide issues outside this module.
+- 21:05 Audited the unified outbound `public_api_key` path and confirmed it was only stored in config/frontend state, not wired into AxonHub's real API auth middleware.
+- 21:12 Traced request persistence and usage logging dependencies and confirmed the gateway must still attach a real `ent.APIKey` to context, otherwise request records and dashboard attribution would drift or break.
+- 21:20 Implemented `AuthenticateRequestAPIKey` / `AuthenticatePublicBenefitAPIKey` so the configured public-benefit key is accepted on request-consumption paths and resolved to the internal backing noauth API key entity only when public outbound is enabled and the key matches exactly.
+- 21:28 Updated request middleware and Gemini key auth middleware to use the new request-facing auth path while intentionally leaving service-account-only OpenAPI auth unchanged.
+- 21:35 Added a guardrail in public-benefit config validation to reject using the reserved internal noauth key value as the configured public outbound key.
+- 21:42 Added focused service and middleware tests for unified public-benefit key auth, project-context propagation, disabled-config rejection, and reserved-key validation.
+- 21:48 Ran targeted `go test` suites for `internal/server/biz` and `internal/server/middleware`; both passed after the auth-chain integration changes.
+- 21:58 Investigated a real operator report: provider balance fetch to `GET /api/user/self` returned `401 Unauthorized`, and the provider edit dialog exposed too many unclear fields for routine station onboarding.
+- 22:06 Traced the issue to two problems: the provider dialog forced low-level configuration choices on the user, and the runtime auth builder only emitted `Authorization` / `Cookie`, which is too narrow for many `new_api`-style stations.
+- 22:18 Reworked the provider UI into an Aether-style auth-template form with a smaller credential surface: template, site URL, Cookie, API Key, optional user ID / username, plus enable and auto-checkin toggles.
+- 22:27 Added wider New API auth compatibility in provider runtime requests by emitting `X-API-Key`, `Api-Key`, `X-Access-Token`, `X-User-ID`, `X-User-Name`, and `New-Api-User` headers alongside the existing `Authorization` / `Cookie` behavior.
+- 22:34 Added a focused runtime test for the new provider auth header set and reran targeted backend tests.
+- 22:41 Rebuilt the frontend bundle, rebuilt the local Docker image from current source, and restarted the local AxonHub container so the simplified provider dialog is now live on the running instance.
+- 23:05 Investigated the next UX gap reported by the user: the provider dialog still lacked Aether's broader template list, and `New API` Cookie input did not auto-fill `用户 ID`.
+- 23:12 Compared the current provider page against Aether's `field-hooks.ts` and architecture presets to confirm the required template names and the exact `parse_new_api_user_id` cookie-decoding behavior.
+- 23:20 Extended the frontend provider template list with `Anyrouter`, `Cubence`, `NekoCode`, `New API`, `Sub2API`, and `YesCode`, and made the API key / user ID row match Aether's compact 3:1 layout more closely.
+- 23:28 Added client-side `session` cookie parsing for `New API` so `用户 ID` is auto-filled when Cookie is pasted and the field is still empty.
+- 23:36 Added `extra.provider_template` persistence so templates that share similar backend semantics do not lose their original UI type when reopened for editing.
+- 23:43 Extended backend provider kind support with `cubence`, `nekocode`, and `yescode`, then added minimal runtime dispatch and path/response handling so the new templates are not UI-only.
+- 23:52 Ran focused Go tests for provider auth behavior and reran the frontend production build from `frontend/` with `pnpm exec vite build`; both passed.
+- 23:58 Prepared the running local Docker instance for another in-place image rebuild so the new Aether-like provider UX can be tested immediately at the existing local address.
+- 00:10 Investigated why the unified outbound still could not serve Claude traffic after the user added channels; confirmed the failure was in runtime candidate selection rather than in public API key auth.
+- 00:18 Reproduced the real issue against the running local stack: `/anthropic/v1/models` worked, but `claude-sonnet-*` requests were being sent to the `muyuan.do` `openai_responses` channel and failed with `convert_request_failed`.
+- 00:27 Verified that the `justdoitme.me` Anthropic-facing channel could answer real Anthropic requests with `MiniMax-M2.7-highspeed`, proving there was already one viable Claude-compatible fallback path in the live configuration.
+- 00:35 Added built-in public-benefit fallback defaults and made normalization auto-fill empty outbound fallback arrays so existing configs immediately gain Claude/Codex fallback behavior.
+- 00:43 Found and fixed a background-task bug: public-benefit periodic runtime sync was running without system bypass and therefore failed on `no user in context`; updated the scheduler to use `authz.WithSystemBypass`.
+- 00:55 Added an API-format compatibility selector and focused tests, then wired it into the candidate selection chain.
+- 01:06 First validation showed the compatibility filter was applied too early; fallback later reintroduced incompatible candidates. Moved the selector to run after public-benefit fallback/session/upstream selectors.
+- 01:18 Rebuilt the local Docker image, replaced the running `axonhub-local-app` container, and re-validated the HTTP health endpoint.
+- 01:27 Probed the live database and discovered the `justdoitme.me` channel used a real channel API key distinct from the supplier-side provider API key; direct upstream tests with the real channel key succeeded for `/v1/models` and `/v1/messages`.
+- 01:35 Reclassified the live `justdoitme.me` channel to `longcat_anthropic` because the upstream behaves like Anthropic-format + Bearer-auth, which already matches an existing AxonHub outbound transformer.
+- 01:42 Confirmed the unified outbound now succeeds for direct `MiniMax-M2.7-highspeed` Anthropic requests.
+- 01:48 Confirmed the alias path also works: sending `claude-sonnet-4-5` to the unified Anthropic endpoint succeeds and is satisfied by the configured fallback chain.
+- 01:56 Updated local Claude CLI settings to use the local unified outbound at `http://127.0.0.1:8090/anthropic` with public API key auth.
+- 02:02 Validated local CLI end-to-end using `claude --bare -p`:
+  - explicit `--model MiniMax-M2.7-highspeed` returned `ok`
+  - default configured model path also returned `ok`
+- 02:08 Recorded the implementation and runtime validation details in the public-benefit summary/log files so later iterations can see the exact root causes and runtime fixes.
+- 09:12 Reviewed the outbound settings UX against the live operator screenshot and identified three sources of confusion: free-text fallback entry, a separate `公益上游` admin entry with overlapping meaning, and the wording overlap between supplier-side API keys and the unified public gateway key.
+- 09:20 Reworked the outbound fallback fields into constrained multi-select controls populated from enabled channel `supportedModels`, so operators can only choose models that actually exist in configured channels.
+- 09:28 Added a lightweight GraphQL channel-model query in the outbound page and normalized save/load flow to persist fallback arrays directly instead of newline-delimited textarea content.
+- 09:35 Removed the standalone `公益上游` entry from sidebar, permissions, locale labels, and dashboard shortcut actions to reduce operator confusion while retaining the backend/runtime concept internally for routing and health accounting.
+- 09:42 Clarified outbound terminology in the UI by renaming `Public API Key` to `统一访问密钥` and explicitly describing it as the aggregate gateway key rather than a supplier credential.
+- 09:48 Rebuilt the frontend bundle with `pnpm exec vite build`; packaging passed after the outbound UI and navigation simplification changes.
+- 13:40 Investigated why provider check-in status stayed at `pending` in the table even after refresh and found the runtime sync path recreated provider runtime objects without carrying forward the previous check-in result when no new check-in was due.
+- 13:45 Updated provider runtime sync to preserve `LastCheckInAt` and `LastCheckInStatus` from the previous runtime snapshot unless a new check-in is actually executed.
+- 13:48 Adjusted the frontend provider table so auto-check-in states are rendered as explicit operator-facing labels: `未执行`, `未启用`, or the real backend status instead of blindly defaulting to `pending`.
+- 13:51 Added a regression test covering the “refresh balance without due check-in” case and reran focused Go tests for `internal/server/biz`.
+- 13:53 Rebuilt the Docker image and restarted the local `axonhub-local-app` container; health check passed on the refreshed instance.

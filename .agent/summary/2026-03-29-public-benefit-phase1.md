@@ -1,0 +1,142 @@
+# Public Benefit Phase 1
+
+## Code Changes
+
+- Added `internal/objects/public_benefit.go` to define the public-benefit aggregation config, runtime state, and dashboard DTOs.
+- Added `internal/server/biz/public_benefit.go` to persist public-benefit config/runtime in `system` settings and build an aggregated dashboard view.
+- Added `internal/server/api/public_benefit.go` to expose admin REST endpoints for config, runtime state, and dashboard.
+- Added tests in `internal/server/biz/public_benefit_test.go` for defaults, validation, and dashboard aggregation.
+- Added protocol-aware model fallback rotation in `internal/server/orchestrator/public_benefit_fallback_selector.go` so Claude/Codex requests can automatically try configured fallback models.
+- Added upstream-aware selector logic in `internal/server/orchestrator/public_benefit_upstream_selector.go` so runtime health, capability flags, and discovered model lists can dynamically filter and prioritize channels.
+- Added `PublicBenefitRuntimeService` to periodically sync provider/upstream runtime state and materialize enabled upstreams into real AxonHub channels.
+- Added `internal/server/orchestrator/public_benefit_session_affinity_selector.go` to implement ccNexus-style seamless switching for Claude/Codex sessions by preferring the last successful upstream within the same session.
+- Extended `internal/server/biz/public_benefit.go` and `internal/objects/public_benefit.go` with session affinity config/state helpers:
+  - `session_affinity_enabled`
+  - `session_affinity_ttl_seconds`
+  - in-memory Claude/Codex session-to-upstream bindings keyed by trace/thread/session context
+- Updated `internal/server/orchestrator/request_execution.go` so session affinity is written only after a successful upstream response, preventing sticky bindings from locking onto a failing upstream.
+- Added tests in `internal/server/orchestrator/public_benefit_session_affinity_selector_test.go` and expanded `internal/server/biz/public_benefit_test.go` to cover session affinity behavior.
+- Enhanced provider runtime operations in `internal/server/biz/public_benefit_runtime.go`:
+  - auto check-in is now gated by `check_in_cron` / daily window instead of running on every sync
+  - added provider-specific/manual actions: refresh single provider, check in single provider
+  - added generic extra-config driven request builder to reuse Aether-style provider adapter ideas without introducing a large plugin system yet
+- Added admin REST endpoints for single-provider operations:
+  - `POST /admin/public-benefit/providers/:provider_id/refresh`
+  - `POST /admin/public-benefit/providers/:provider_id/checkin`
+- Added a new admin frontend page `frontend/src/features/public-benefit-providers/index.tsx` and route `/_authenticated/public-benefit-providers/` for provider management.
+- Wired the new provider management page into sidebar navigation, route permission config, and locale labels.
+- Added two more admin frontend modules:
+  - `frontend/src/features/public-benefit-upstreams/index.tsx`
+  - `frontend/src/features/public-benefit-outbound/index.tsx`
+- Added a public-benefit overview page `frontend/src/features/public-benefit-dashboard/index.tsx` with route `/_authenticated/public-benefit/`.
+- Wired all public-benefit pages into sidebar navigation, route permission config, locale labels, and the generated router tree.
+- Fixed a real frontend bug in `frontend/src/features/public-benefit-outbound/index.tsx` by moving the `Form` provider around the whole page content so all `FormField` nodes have valid form context.
+- Added empty-state rendering for the upstream management table to avoid blank tables when no upstream is configured.
+- Corrected public-benefit dashboard aggregation in `internal/server/biz/public_benefit.go` so `TotalRequests` and `TotalTokens` no longer double-count both upstream totals and daily snapshots.
+- Added runtime usage backfill in `internal/server/biz/public_benefit.go` and `internal/server/biz/usage_log.go`:
+  - successful requests routed through `public-benefit/<upstream-id>` channels now update upstream `total_requests`
+  - upstream `total_tokens` is incremented from actual usage logs
+  - `last_switch_at` is updated on successful usage
+  - current-day `daily_usage` snapshots are updated automatically
+- Added targeted tests to verify the new runtime accounting behavior:
+  - `TestSystemService_RecordPublicBenefitUsage`
+  - `TestUsageLogService_CreateUsageLog_RecordsPublicBenefitUsage`
+- Installed frontend dependencies locally and verified that `vite build` succeeds with the current public-benefit admin pages included.
+- Fixed TypeScript typing issues in the new public-benefit forms by changing numeric form fields to string-backed inputs and converting them at submit time, which avoids `react-hook-form + zod` generic mismatches in:
+  - `frontend/src/features/public-benefit-upstreams/index.tsx`
+  - `frontend/src/features/public-benefit-outbound/index.tsx`
+- Removed an unused translation hook from `frontend/src/features/public-benefit-providers/index.tsx` to keep the new module clean under stricter TS checks.
+- Connected `public_benefit.outbound.public_api_key` to the real request authentication chain instead of leaving it as config-only:
+  - added `AuthenticateRequestAPIKey` and `AuthenticatePublicBenefitAPIKey` in `internal/server/biz/auth.go`
+  - the unified public-benefit API key now resolves to a real backing API key entity via `EnsureNoAuthAPIKey`
+  - this preserves existing request persistence, usage logging, project context, and dashboard aggregation behavior because `contexts.WithAPIKey` still receives a real `ent.APIKey`
+- Updated request-facing middleware in `internal/server/middleware/auth.go` so the unified public-benefit key works on normal API-key routes and Gemini `?key=` authentication routes.
+- Kept `WithOpenAPIAuth` unchanged so the unified public-benefit key does not accidentally gain access to service-account-only management flows such as LLM API key creation.
+- Added config validation in `internal/server/biz/public_benefit.go` to reject using the reserved internal `NoAuth` key value as `public_api_key`, preventing a self-conflicting configuration.
+- Added targeted tests:
+  - `TestAuthService_AuthenticateRequestAPIKey_PublicBenefit`
+  - `TestAuthService_AuthenticateRequestAPIKey_PublicBenefitDisabled`
+  - `TestSystemService_SetPublicBenefitHubConfig_RejectReservedPublicAPIKey`
+  - `TestWithAPIKeyConfig_AllowsPublicBenefitUnifiedAPIKey`
+- Simplified the public-benefit provider edit dialog in `frontend/src/features/public-benefit-providers/index.tsx` to follow an Aether-style auth template flow:
+  - replaced raw `kind` / `auth_type` text inputs with a provider template selector
+  - removed low-signal fields such as direct balance/check-in path editing and free-form extra JSON from the main dialog
+  - reduced the credential form to site URL, cookie, API key, and optional user ID / username based on the selected template
+  - clarified copy so operators understand what each field is for
+- Expanded provider auth compatibility in `internal/server/biz/public_benefit_runtime.go` for New API style stations:
+  - continue sending `Authorization: Bearer ...`
+  - also send `X-API-Key` / `Api-Key` when `api_key` is configured
+  - send `X-Access-Token` when `token` is configured
+  - send `X-User-Name` / `X-User-ID` / `New-Api-User` when `username` is configured
+- Added a targeted runtime test `TestApplyPublicBenefitAuth_NewAPICompatibleHeaders` to lock in the new upstream auth header behavior.
+- Extended the provider auth template dialog in `frontend/src/features/public-benefit-providers/index.tsx` to align more closely with Aether:
+  - added template options `Anyrouter`, `Cubence`, `NekoCode`, `New API`, `Sub2API`, `YesCode`
+  - narrowed the inline API key + user ID layout so the user ID input is visually compact like Aether
+  - persisted the selected template via `extra.provider_template` so edit/reopen keeps the chosen template instead of collapsing into `generic`
+- Added client-side New API cookie parsing in `frontend/src/features/public-benefit-providers/index.tsx`:
+  - when the selected template is `New API` and `Cookie` is filled
+  - the form now automatically parses and fills `用户 ID` from the `session` cookie payload, following Aether's `parse_new_api_user_id` behavior
+- Extended public-benefit provider kinds in `internal/objects/public_benefit.go` with:
+  - `cubence`
+  - `nekocode`
+  - `yescode`
+- Updated provider runtime dispatch in `internal/server/biz/public_benefit_runtime.go` so the new templates route to dedicated handlers instead of silently falling through generic selection.
+- Added minimal runtime support for the new provider templates:
+  - `cubence` and `nekocode` now use template-specific balance path defaults and JSON path hints
+  - `yescode` now combines `/api/v1/user/balance` and `/api/v1/auth/profile` to estimate total balance and weekly spent in a way that is closer to Aether's behavior
+- Added a focused runtime regression test `TestApplyPublicBenefitAuth_CookieOnlyTemplates` to protect cookie-only template auth behavior.
+
+## Why
+
+- AxonHub already has strong gateway and channel infrastructure, but it lacks a dedicated control plane for公益站供应商账户与聚合上游站点管理.
+- Using `SystemService` JSON-backed settings avoids an immediate Ent/GraphQL regeneration cycle and keeps the first phase small.
+- This creates a stable foundation for phase 2 tasks:
+  - provider balance polling and auto check-in
+  - upstream model discovery and health sync
+  - unified public gateway policy execution
+- Claude and Codex compatibility now has a concrete routing hook: ordered fallback model sequences are resolved from system config and merged into AxonHub's existing retry pipeline.
+- Fallback rotation is no longer purely static: healthy upstream runtime metadata can now influence which model variants and which channels are selected first.
+- A manual sync endpoint and scheduled sync loop now exist, so config is no longer passive data only.
+- ccNexus's seamless switching value for terminal clients is mostly about continuity, not just failover: the same Claude/Codex session should keep using the same good upstream until health or availability changes.
+- AxonHub already preserves provider-private reasoning signatures across same-session provider/model switching, so the missing piece was route affinity rather than message-format survival.
+- Keeping session affinity in selector/service memory avoids DB schema changes, preserves current APIs, and stays aligned with the minimal-change rule.
+- The provider operation side now moves closer to Aether's practical pattern: balance refresh and account actions are explicit per-provider workflows with lightweight strategy branching.
+- A dedicated admin page is more appropriate than putting provider management under generic system tabs because this is an operational module, not a base system setting.
+- The public-benefit admin surface is now a complete operational module instead of a single provider page: provider accounts, upstream relay sites, unified outbound gateway policy, and a dedicated overview are all directly manageable in the same AxonHub-style admin shell.
+- Without runtime accounting from real successful requests, the health/dashboard view would remain partially synthetic; updating runtime state from usage-log creation keeps aggregated stats aligned with real routed traffic while preserving the existing AxonHub request pipeline.
+- Fixing the dashboard double-count avoids misleading totals during validation and operations.
+- Real frontend build verification matters here because this module adds new route files and generated router entries; without an actual build pass, the admin surface could look complete in code but still fail to package.
+- The unified public outbound key was not actually usable until authentication middleware recognized it. Resolving it to a real backing API key instead of inventing a fake context object keeps AxonHub's existing request logging, quota, usage, and project-scoped permission chain intact with minimal code change.
+- Restricting this behavior to request-consumption middleware avoids widening the privilege surface of admin or service-account-only endpoints.
+- The original provider form exposed too many internal knobs and made basic provider onboarding ambiguous. A template-driven dialog fits the公益站 use case better because most operators only need to express a small credential set, not transport internals.
+- Many公益站 based on `new_api` are inconsistent about whether they accept `Authorization`, `X-API-Key`, cookie-only auth, or a user-id companion header during balance/check-in calls. Sending a broader but still minimal compatible header set improves success rate without introducing station-specific adapters immediately.
+- Matching Aether's provider dialog more closely reduces operator confusion: the template name, field grouping, and compact `用户 ID` input now better reflect what users already expect from that workflow.
+- Auto-parsing `用户 ID` from New API session cookies removes one of the highest-friction manual steps and directly addresses the user's reported onboarding problem.
+- Persisting the chosen template separately from `kind` avoids a UI regression where multiple Aether-style templates would otherwise collapse into the same backend kind and reopen incorrectly.
+- Tightened the public-benefit outbound runtime so `Claude` traffic can actually reach a working upstream instead of only listing models:
+  - added built-in default fallback sequences in `internal/server/biz/public_benefit.go` for Claude/Codex/Gemini/OpenCode/generic families
+  - empty outbound fallback arrays are now auto-filled during config normalization, so existing installations do not need to re-save config before fallback works
+- Fixed the background public-benefit runtime scheduler in `internal/server/biz/public_benefit_runtime.go` to run with system-bypass context; this prevents periodic sync from failing with `no user in context` and lets runtime health/model data refresh automatically.
+- Added `internal/server/orchestrator/candidates_api_compat.go` and tests so candidate selection can prefer channel types that natively match the inbound API format:
+  - Anthropic requests prefer Anthropic-compatible channels
+  - Gemini requests prefer Gemini-native channels
+  - OpenAI Responses requests prefer `openai_responses` / `codex`
+- Moved API-format compatibility filtering to run after public-benefit fallback/session/upstream selectors in `internal/server/orchestrator/select_candidates.go` so merged fallback candidates are filtered in their final form instead of too early.
+- Updated the running local environment to validate the real path end-to-end:
+  - rebuilt `axonhub-local:public-benefit`
+  - replaced the running `axonhub-local-app` container with the rebuilt image
+  - confirmed the local public outbound at `http://127.0.0.1:8090/anthropic/v1/messages` now succeeds for both `MiniMax-M2.7-highspeed` and aliased `claude-sonnet-4-5`
+- Aligned the local `justdoitme.me` Claude-facing channel to `longcat_anthropic` in the running database because this upstream behaves like Anthropic-format + Bearer auth; this reuses an existing AxonHub channel type instead of introducing a custom protocol branch.
+- Updated local Claude CLI settings in `/Users/mac_522/.claude/settings.json` to point to the unified local outbound and validated terminal usage with:
+  - `claude --bare -p 'reply with ok only'`
+  - the command returned `ok`, proving the local Claude CLI can now use the AxonHub unified outbound directly.
+- Refined the public-benefit outbound admin page in `frontend/src/features/public-benefit-outbound/index.tsx`:
+  - replaced free-text fallback textareas with constrained multi-select dropdowns backed by currently enabled channel `supportedModels`
+  - prevented operators from manually entering models that no configured channel actually supports
+  - renamed `Public API Key` presentation to `统一访问密钥` and clarified that it is the aggregate gateway key, not a supplier-site API key
+- Simplified the public-benefit management surface by removing `公益上游` from the main navigation and permission-config flow:
+  - removed the sidebar entry in `frontend/src/sidebar.ts`
+  - removed the route-permission entry in `frontend/src/config/route-permission.ts`
+  - removed the dashboard shortcut button and reworded the health cards in `frontend/src/features/public-benefit-dashboard/index.tsx` so they describe current aggregated channels instead of exposing an extra operator concept that is not needed for the current product flow
+- Updated locale labels in `frontend/src/locales/zh-CN/base.json` and `frontend/src/locales/en/base.json` to match the navigation simplification.
+- Rebuilt the frontend with `pnpm exec vite build` after the public-benefit admin changes and confirmed the updated management pages package successfully.
