@@ -82,9 +82,3 @@
 - 13:48 Adjusted the frontend provider table so auto-check-in states are rendered as explicit operator-facing labels: `未执行`, `未启用`, or the real backend status instead of blindly defaulting to `pending`.
 - 13:51 Added a regression test covering the “refresh balance without due check-in” case and reran focused Go tests for `internal/server/biz`.
 - 13:53 Rebuilt the Docker image and restarted the local `axonhub-local-app` container; health check passed on the refreshed instance.
-- 22:10 Investigated a live Claude routing regression where the only enabled `claude-*` channel still emitted upstream `/v1/responses` traffic; database inspection confirmed the preserved `muyuan.do` channel remained typed as `openai_responses`, so the wrong outbound transformer was being used.
-- 22:18 Confirmed the issue was not in fallback selection alone: candidate execution uses `candidate.Channel.Outbound`, so a mis-typed channel will always hit the wrong protocol even when selected for Claude traffic.
-- 22:24 Added `InboundAPIFormat` to orchestrator persistence state and captured the real inbound API format during inbound request transformation so outbound execution can distinguish Anthropic-origin requests reliably.
-- 22:31 Added a targeted runtime fallback in outbound execution: when an Anthropic request selects an `openai_responses/codex` channel for a `claude-*` model, AxonHub now constructs an Anthropic LongCat-style outbound transformer on the fly and sends the request to `/v1/messages` instead of `/v1/responses`.
-- 22:36 Added focused orchestrator tests to cover both sides of the behavior: Claude-on-responses-channel forces Anthropic outbound, while normal OpenAI Responses requests remain unchanged.
-- 22:42 Rebuilt the local Docker image and restarted `axonhub-local-app`; the refreshed instance is healthy and running the protocol-correction patch.
