@@ -562,15 +562,10 @@ func (svc *ChannelProbeService) runActiveProbeForChannel(ctx context.Context, ch
 	defer cancel()
 
 	start := time.Now()
-	streamRequired := ch.Policies.Stream == objects.CapabilityPolicyRequire
-
-	req := &llm.Request{
-		Model:               modelID,
-		Messages:            []llm.Message{{Role: "user", Content: llm.MessageContent{Content: lo.ToPtr("Reply with OK only.")}}},
-		MaxTokens:           lo.ToPtr(int64(8)),
-		MaxCompletionTokens: lo.ToPtr(int64(8)),
-		Temperature:         lo.ToPtr(0.0),
-		Stream:              lo.ToPtr(streamRequired),
+	req := buildActiveProbeRequest(ch, modelID)
+	if req == nil {
+		svc.recordProbeResult(ctx, channelID, modelID, false)
+		return &channelProbeStats{total: 1, success: 0}
 	}
 
 	rawReq, err := ch.Outbound.TransformRequest(probeCtx, req)
@@ -586,7 +581,7 @@ func (svc *ChannelProbeService) runActiveProbeForChannel(ctx context.Context, ch
 	}
 
 	var stats *channelProbeStats
-	if streamRequired {
+	if req.Stream != nil && *req.Stream {
 		stats = svc.runActiveStreamProbe(probeCtx, ch, rawReq, start, modelID)
 	} else {
 		stats = svc.runActiveUnaryProbe(probeCtx, ch, rawReq, start, modelID)
@@ -722,6 +717,46 @@ func (svc *ChannelProbeService) runActiveStreamProbe(
 		total:                 1,
 		success:               1,
 		avgTimeToFirstTokenMs: &latencyMs,
+	}
+}
+
+func buildActiveProbeRequest(ch *Channel, modelID string) *llm.Request {
+	if strings.TrimSpace(modelID) == "" {
+		return nil
+	}
+
+	streamPreferred := true
+	if ch != nil && ch.Policies.Stream == objects.CapabilityPolicyForbid {
+		streamPreferred = false
+	}
+
+	systemText := "You are a health probe. Reply with OK only."
+	userText := "Reply with OK only."
+
+	return &llm.Request{
+		Model: modelID,
+		Messages: []llm.Message{
+			{
+				Role: "system",
+				Content: llm.MessageContent{
+					Content: lo.ToPtr(systemText),
+				},
+			},
+			{
+				Role: "user",
+				Content: llm.MessageContent{
+					Content: lo.ToPtr(userText),
+				},
+			},
+		},
+		Metadata: map[string]string{
+			"user_id":    "channel-probe-user",
+			"session_id": "channel-probe-session",
+		},
+		MaxTokens:           lo.ToPtr(int64(8)),
+		MaxCompletionTokens: lo.ToPtr(int64(8)),
+		Temperature:         lo.ToPtr(0.0),
+		Stream:              lo.ToPtr(streamPreferred),
 	}
 }
 

@@ -100,6 +100,44 @@ func TestShouldRunProbe_PerFrequencyWindows(t *testing.T) {
 	assert.Equal(t, thirdNow, thirdWindows[0].endTime)
 }
 
+func TestBuildActiveProbeRequest_UsesRealisticPayload(t *testing.T) {
+	t.Run("prefers stream unless channel forbids it", func(t *testing.T) {
+		req := buildActiveProbeRequest(&Channel{
+			Channel: &ent.Channel{
+				Policies: objects.ChannelPolicies{Stream: objects.CapabilityPolicyUnlimited},
+			},
+		}, "gpt-5.4")
+
+		require.NotNil(t, req)
+		require.Equal(t, "gpt-5.4", req.Model)
+		require.Len(t, req.Messages, 2)
+		require.Equal(t, "system", req.Messages[0].Role)
+		require.Equal(t, "user", req.Messages[1].Role)
+		require.Equal(t, "channel-probe-user", req.Metadata["user_id"])
+		require.Equal(t, "channel-probe-session", req.Metadata["session_id"])
+		require.NotNil(t, req.Stream)
+		require.True(t, *req.Stream)
+		require.Equal(t, int64(8), *req.MaxTokens)
+		require.Equal(t, int64(8), *req.MaxCompletionTokens)
+	})
+
+	t.Run("falls back to unary when stream is forbidden", func(t *testing.T) {
+		req := buildActiveProbeRequest(&Channel{
+			Channel: &ent.Channel{
+				Policies: objects.ChannelPolicies{Stream: objects.CapabilityPolicyForbid},
+			},
+		}, "glm-5")
+
+		require.NotNil(t, req)
+		require.NotNil(t, req.Stream)
+		require.False(t, *req.Stream)
+	})
+
+	t.Run("returns nil when model is empty", func(t *testing.T) {
+		require.Nil(t, buildActiveProbeRequest(&Channel{}, ""))
+	})
+}
+
 // TestTPSCalculation_RetryScenario tests that only successful executions are counted
 func TestTPSCalculation_RetryScenario(t *testing.T) {
 	client := enttest.NewEntClient(t, "sqlite3", "file:ent?mode=memory&_fk=0")

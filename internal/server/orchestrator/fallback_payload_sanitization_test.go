@@ -84,7 +84,7 @@ func TestSanitizeRequestForCandidate_OpenAIResponsesFallbackFromAnthropic(t *tes
 	require.NotSame(t, req.RawRequest, sanitized.RawRequest)
 	require.Equal(t, req.RawRequest.Headers.Get("X-Test"), sanitized.RawRequest.Headers.Get("X-Test"))
 	require.Equal(t, req.RawRequest.Query.Get("q"), sanitized.RawRequest.Query.Get("q"))
-	require.Equal(t, req.Metadata, sanitized.Metadata)
+	require.Nil(t, sanitized.Metadata)
 
 	require.Equal(t, []string{"reasoning.encrypted_content"}, sanitized.TransformerMetadata["include"])
 	require.Equal(t, int64(7), sanitized.TransformerMetadata["max_tool_calls"])
@@ -118,6 +118,7 @@ func TestSanitizeRequestForCandidate_OpenAIResponsesFallbackFromAnthropic(t *tes
 	require.NotContains(t, payload, "system")
 	require.NotContains(t, payload, "anthropic_version")
 	require.NotContains(t, payload, "thinking")
+	require.NotContains(t, payload, "metadata")
 
 	inputItems, ok := payload["input"].([]any)
 	require.True(t, ok)
@@ -152,6 +153,7 @@ func TestSanitizeRequestForCandidate_CodexFallbackNormalizesCompactRequestType(t
 	require.Equal(t, llm.APIFormatOpenAIResponseCompact, sanitized.APIFormat)
 	require.Equal(t, llm.RequestTypeCompact, sanitized.RequestType)
 	require.Equal(t, "gpt-5.4-codex", sanitized.Model)
+	require.Nil(t, sanitized.Metadata)
 	require.Equal(t, []string{"reasoning.encrypted_content"}, sanitized.TransformerMetadata["include"])
 	require.NotContains(t, sanitized.TransformerMetadata, "anthropic_reasoning_signature")
 	require.NotContains(t, sanitized.TransformerMetadata, "anthropic_ephemeral_cache_control")

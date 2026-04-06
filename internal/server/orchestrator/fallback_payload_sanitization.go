@@ -68,6 +68,7 @@ func sanitizeRequestForCandidate(
 		decision.Rebuilt = true
 		sanitized.APIFormat = decision.TargetAPIFormat
 		sanitized.RequestType = normalizeRequestTypeForTarget(sanitized.RequestType, decision.TargetAPIFormat)
+		sanitized.Metadata = sanitizeRequestMetadataForTarget(sanitized.Metadata, decision.TargetAPIFormat)
 		sanitized.TransformerMetadata, decision.RemovedTransformerMetadataKeys, decision.KeptTransformerMetadataKeys =
 			sanitizeTransformerMetadataForTarget(sanitized.TransformerMetadata, decision.TargetAPIFormat)
 	} else {
@@ -198,6 +199,22 @@ func sanitizeTransformerMetadataForTarget(metadata map[string]any, target llm.AP
 	}
 
 	return kept, removedKeys, keptKeys
+}
+
+func sanitizeRequestMetadataForTarget(metadata map[string]string, target llm.APIFormat) map[string]string {
+	if len(metadata) == 0 {
+		return nil
+	}
+
+	switch target {
+	case llm.APIFormatOpenAIResponse, llm.APIFormatOpenAIResponseCompact:
+		// Rebuilt fallback payloads often land on OpenAI-compatible aggregators
+		// that reject arbitrary metadata fields. Drop them to avoid long retry
+		// loops caused by deterministic 400 responses.
+		return nil
+	default:
+		return metadata
+	}
 }
 
 func shouldRebuildRequestForCandidate(sourceFormat, targetFormat llm.APIFormat, candidate *ChannelModelsCandidate) bool {
