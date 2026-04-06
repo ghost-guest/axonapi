@@ -185,6 +185,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("log.file.max_age", 30)     // days
 	v.SetDefault("log.file.max_backups", 10) // files
 	v.SetDefault("log.file.local_time", true)
+	v.SetDefault("log.file.cleanup.enabled", false)
+	v.SetDefault("log.file.cleanup.max_total_size_gb", 0)
+	v.SetDefault("log.file.cleanup.cleanup_interval_days", 0)
 
 	// Metrics defaults
 	v.SetDefault("metrics.enabled", false)

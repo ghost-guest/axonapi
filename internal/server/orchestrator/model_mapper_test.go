@@ -5,11 +5,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	"github.com/looplj/axonhub/internal/ent"
 	"github.com/looplj/axonhub/internal/objects"
-	"github.com/looplj/axonhub/llm"
 )
 
 func TestModelMapper_MapModel(t *testing.T) {
@@ -220,22 +218,4 @@ func TestModelMapper_MatchesMapping(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
-}
-
-func TestModelMapper_ReplaceResponseModel_PreservesActualModel(t *testing.T) {
-	mapper := NewModelMapper()
-	response := &llm.Response{Model: "gpt-5.4"}
-
-	mapper.ReplaceResponseModel(response, "claude-sonnet-4")
-
-	require.Equal(t, "gpt-5.4", response.Model)
-}
-
-func TestModelMapper_ReplaceResponseModel_BackfillsEmptyModel(t *testing.T) {
-	mapper := NewModelMapper()
-	response := &llm.Response{}
-
-	mapper.ReplaceResponseModel(response, "claude-sonnet-4")
-
-	require.Equal(t, "claude-sonnet-4", response.Model)
 }

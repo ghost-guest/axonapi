@@ -14,7 +14,6 @@ import { ChannelsErrorResolvedDialog } from './channels-error-resolved-dialog';
 import { ChannelsModelMappingDialog } from './channels-model-mapping-dialog';
 import { ChannelsModelPriceDialog } from './channels-model-price-dialog';
 import { ChannelsOverrideDialog } from './channels-override-dialog';
-import { ChannelsProbeSettingsDialog } from './channels-probe-settings-dialog';
 import { ChannelsProxyDialog } from './channels-proxy-dialog';
 import { ChannelsStatusDialog } from './channels-status-dialog';
 import { ChannelsTestDialog } from './channels-test-dialog';
@@ -112,21 +111,17 @@ export function ChannelsDialogs() {
             currentRow={currentRow}
           />
 
-          <ChannelsProbeSettingsDialog
-            key={`channel-probe-settings-${currentRow.id}`}
+          {/* <ChannelsSettingsDialog
+            key={`channel-settings-${currentRow.id}`}
             open={open === 'settings'}
-            onOpenChange={(isOpen) => {
-              if (isOpen) {
-                setOpen('settings');
-              } else {
-                setOpen(null);
-                setTimeout(() => {
-                  setCurrentRow(null);
-                }, 500);
-              }
+            onOpenChange={() => {
+              setOpen('settings')
+              setTimeout(() => {
+                setCurrentRow(null)
+              }, 500)
             }}
             currentRow={currentRow}
-          />
+          /> */}
 
           <ChannelsModelMappingDialog
             key={`channel-model-mapping-${currentRow.id}`}

@@ -256,52 +256,6 @@ func TestChannelService_UpdateChannel_RejectsInvalidProbeFrequency(t *testing.T)
 	require.Contains(t, err.Error(), "invalid probe frequency")
 }
 
-func TestChannelService_CreateChannel_RejectsInvalidProbeIntervalMode(t *testing.T) {
-	svc, client := setupTestChannelService(t)
-	defer client.Close()
-
-	ctx := context.Background()
-	ctx = ent.NewContext(ctx, client)
-	ctx = authz.WithTestBypass(ctx)
-
-	_, err := svc.CreateChannel(ctx, ent.CreateChannelInput{
-		Type:             channel.TypeOpenai,
-		Name:             "invalid-probe-mode",
-		Credentials:      objects.ChannelCredentials{APIKey: "key"},
-		SupportedModels:  []string{"gpt-5.4"},
-		DefaultTestModel: "gpt-5.4",
-		Settings: &objects.ChannelSettings{
-			ProbeIntervalMode: "cyclic",
-		},
-	})
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "invalid probe interval mode")
-}
-
-func TestChannelService_CreateChannel_RejectsInvalidRandomProbeInterval(t *testing.T) {
-	svc, client := setupTestChannelService(t)
-	defer client.Close()
-
-	ctx := context.Background()
-	ctx = ent.NewContext(ctx, client)
-	ctx = authz.WithTestBypass(ctx)
-
-	_, err := svc.CreateChannel(ctx, ent.CreateChannelInput{
-		Type:             channel.TypeOpenai,
-		Name:             "invalid-random-probe-interval",
-		Credentials:      objects.ChannelCredentials{APIKey: "key"},
-		SupportedModels:  []string{"gpt-5.4"},
-		DefaultTestModel: "gpt-5.4",
-		Settings: &objects.ChannelSettings{
-			ProbeIntervalMode:             objects.ChannelProbeIntervalModeRandom,
-			ProbeRandomMinIntervalSeconds: 3600,
-			ProbeRandomMaxIntervalSeconds: 1800,
-		},
-	})
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "maximum interval seconds must be greater than or equal")
-}
-
 func TestChannelService_CreateChannel_PersistsAutoSyncModelPatternAndManualModels(t *testing.T) {
 	svc, client := setupTestChannelService(t)
 	defer client.Close()

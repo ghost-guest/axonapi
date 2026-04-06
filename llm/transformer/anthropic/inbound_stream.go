@@ -192,6 +192,38 @@ func (s *anthropicInboundStream) Next() bool {
 
 	// Try to get the next chunk from source
 	if !s.source.Next() {
+		if s.hasFinished && !s.messageStoped {
+			streamEvent := StreamEvent{
+				Type: "message_delta",
+			}
+
+			if s.stopReason != nil {
+				streamEvent.Delta = &StreamDelta{
+					StopReason: s.stopReason,
+				}
+			}
+
+			err := s.enqueEvent(&streamEvent)
+			if err != nil {
+				s.err = fmt.Errorf("failed to enqueue final message_delta event: %w", err)
+				return false
+			}
+
+			stopEvent := StreamEvent{
+				Type: "message_stop",
+			}
+
+			err = s.enqueEvent(&stopEvent)
+			if err != nil {
+				s.err = fmt.Errorf("failed to enqueue final message_stop event: %w", err)
+				return false
+			}
+
+			s.messageStoped = true
+
+			return true
+		}
+
 		return false
 	}
 

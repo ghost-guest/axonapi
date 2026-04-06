@@ -33,7 +33,8 @@ type OpenAIHandlersParams struct {
 	PromptService   *biz.PromptService
 	PromptProtectionRuleService *biz.PromptProtectionRuleService
 	QuotaService    *biz.QuotaService
-	HttpClient      *httpclient.HttpClient
+	HttpClient           *httpclient.HttpClient
+	ModelCircuitBreaker *biz.ModelCircuitBreaker
 	Client          *ent.Client
 }
 
@@ -70,6 +71,7 @@ func NewOpenAIHandlers(params OpenAIHandlersParams) *OpenAIHandlers {
 				params.PromptService,
 				params.QuotaService,
 				params.PromptProtectionRuleService,
+				params.ModelCircuitBreaker,
 			),
 		},
 		ResponseCompletionHandlers: &ChatCompletionHandlers{
@@ -84,6 +86,7 @@ func NewOpenAIHandlers(params OpenAIHandlersParams) *OpenAIHandlers {
 				params.PromptService,
 				params.QuotaService,
 				params.PromptProtectionRuleService,
+				params.ModelCircuitBreaker,
 			),
 		},
 		CompactHandlers: &ChatCompletionHandlers{
@@ -98,6 +101,7 @@ func NewOpenAIHandlers(params OpenAIHandlersParams) *OpenAIHandlers {
 				params.PromptService,
 				params.QuotaService,
 				params.PromptProtectionRuleService,
+				params.ModelCircuitBreaker,
 			),
 		},
 		EmbeddingHandlers: &ChatCompletionHandlers{
@@ -112,6 +116,7 @@ func NewOpenAIHandlers(params OpenAIHandlersParams) *OpenAIHandlers {
 				params.PromptService,
 				params.QuotaService,
 				params.PromptProtectionRuleService,
+				params.ModelCircuitBreaker,
 			),
 		},
 		ImageGenerationHandlers: &ChatCompletionHandlers{
@@ -126,6 +131,7 @@ func NewOpenAIHandlers(params OpenAIHandlersParams) *OpenAIHandlers {
 				params.PromptService,
 				params.QuotaService,
 				params.PromptProtectionRuleService,
+				params.ModelCircuitBreaker,
 			),
 		},
 		ImageEditHandlers: &ChatCompletionHandlers{
@@ -140,6 +146,7 @@ func NewOpenAIHandlers(params OpenAIHandlersParams) *OpenAIHandlers {
 				params.PromptService,
 				params.QuotaService,
 				params.PromptProtectionRuleService,
+				params.ModelCircuitBreaker,
 			),
 		},
 		ImageVariationHandlers: &ChatCompletionHandlers{
@@ -154,6 +161,7 @@ func NewOpenAIHandlers(params OpenAIHandlersParams) *OpenAIHandlers {
 				params.PromptService,
 				params.QuotaService,
 				params.PromptProtectionRuleService,
+				params.ModelCircuitBreaker,
 			),
 		},
 		VideoHandlers: &ChatCompletionHandlers{
@@ -168,6 +176,7 @@ func NewOpenAIHandlers(params OpenAIHandlersParams) *OpenAIHandlers {
 				params.PromptService,
 				params.QuotaService,
 				params.PromptProtectionRuleService,
+				params.ModelCircuitBreaker,
 			),
 		},
 		VideoInboundTransformer: videoInbound,

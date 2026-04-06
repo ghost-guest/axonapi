@@ -6,8 +6,10 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/samber/lo"
 	"github.com/stretchr/testify/require"
 
+	"github.com/looplj/axonhub/llm"
 	"github.com/looplj/axonhub/llm/httpclient"
 	"github.com/looplj/axonhub/llm/internal/pkg/xjson"
 	"github.com/looplj/axonhub/llm/internal/pkg/xtest"
@@ -339,4 +341,76 @@ func TestInboundTransformer_StreamTransformation_WithTestData(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestInboundTransformer_EmitsMessageStopWithoutTrailingUsageChunk(t *testing.T) {
+	transformer := NewInboundTransformer()
+
+	input := []*llm.Response{
+		{
+			ID:    "msg_123",
+			Model: "claude-sonnet-4-5",
+			Usage: &llm.Usage{
+				PromptTokens:     12,
+				CompletionTokens: 0,
+				TotalTokens:      12,
+			},
+			Choices: []llm.Choice{
+				{
+					Index: 0,
+					Delta: &llm.Message{Role: "assistant"},
+				},
+			},
+		},
+		{
+			ID:    "msg_123",
+			Model: "claude-sonnet-4-5",
+			Choices: []llm.Choice{
+				{
+					Index: 0,
+					Delta: &llm.Message{
+						Content: llm.MessageContent{Content: lo.ToPtr("hello")},
+					},
+				},
+			},
+		},
+		{
+			ID:    "msg_123",
+			Model: "claude-sonnet-4-5",
+			Choices: []llm.Choice{
+				{
+					Index:        0,
+					FinishReason: lo.ToPtr("stop"),
+				},
+			},
+		},
+	}
+
+	stream, err := transformer.TransformStream(t.Context(), streams.SliceStream(input))
+	require.NoError(t, err)
+
+	var events []*httpclient.StreamEvent
+	for stream.Next() {
+		events = append(events, stream.Current())
+	}
+
+	require.NoError(t, stream.Err())
+	require.Len(t, events, 6)
+
+	var eventTypes []string
+	for _, event := range events {
+		var payload StreamEvent
+		err := json.Unmarshal(event.Data, &payload)
+		require.NoError(t, err)
+		eventTypes = append(eventTypes, payload.Type)
+	}
+
+	require.Equal(t, []string{
+		"message_start",
+		"content_block_start",
+		"content_block_delta",
+		"content_block_stop",
+		"message_delta",
+		"message_stop",
+	}, eventTypes)
 }

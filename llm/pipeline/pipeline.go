@@ -241,12 +241,26 @@ func (p *pipeline) Process(ctx context.Context, request *httpclient.Request) (*R
 
 	// Step 3: Process the request
 	for {
+		attemptNo := channelSwitches + sameChannelRetries + 1
+		slog.DebugContext(ctx, "provider_request_start",
+			slog.Int("attempt_no", attemptNo),
+			slog.Int("retry_budget_total", p.maxChannelRetries+1),
+			slog.Int("retry_budget_remaining", max(0, p.maxChannelRetries-channelSwitches)),
+		)
 		result, err := p.processRequest(ctx, llmRequest)
 		if err == nil {
+			slog.DebugContext(ctx, "final_outcome",
+				slog.Int("winning_attempt_no", attemptNo),
+				slog.Int("total_attempts", attemptNo),
+			)
 			return result, nil
 		}
 
 		lastErr = err
+		slog.WarnContext(ctx, "provider_error",
+			slog.Int("attempt_no", attemptNo),
+			slog.Any("error", err),
+		)
 
 		// Stop retrying if the context is canceled or the deadline is exceeded.
 		if ctx.Err() != nil {
@@ -368,4 +382,11 @@ func (p *pipeline) processRequest(ctx context.Context, request *llm.Request) (*R
 // getMaxSameChannelRetries returns the maximum number of same-channel retries.
 func (p *pipeline) getMaxSameChannelRetries() int {
 	return p.maxSameChannelRetries
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

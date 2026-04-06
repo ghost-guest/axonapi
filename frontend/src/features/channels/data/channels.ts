@@ -80,12 +80,7 @@ const CREATE_CHANNEL_MUTATION = `
       defaultTestModel
         settings {
           extraModelPrefix
-          probeEnabled
           probeFrequency
-          probeIntervalMode
-          probeFixedIntervalSeconds
-          probeRandomMinIntervalSeconds
-          probeRandomMaxIntervalSeconds
           modelMappings {
             from
             to
@@ -132,12 +127,7 @@ const BULK_CREATE_CHANNELS_MUTATION = `
       defaultTestModel
         settings {
           extraModelPrefix
-          probeEnabled
           probeFrequency
-          probeIntervalMode
-          probeFixedIntervalSeconds
-          probeRandomMinIntervalSeconds
-          probeRandomMaxIntervalSeconds
           modelMappings {
             from
             to
@@ -184,12 +174,7 @@ const UPDATE_CHANNEL_MUTATION = `
       defaultTestModel
         settings {
           extraModelPrefix
-          probeEnabled
           probeFrequency
-          probeIntervalMode
-          probeFixedIntervalSeconds
-          probeRandomMinIntervalSeconds
-          probeRandomMaxIntervalSeconds
           modelMappings {
             from
             to
@@ -289,12 +274,7 @@ const BULK_IMPORT_CHANNELS_MUTATION = `
         defaultTestModel
         settings {
           extraModelPrefix
-          probeEnabled
           probeFrequency
-          probeIntervalMode
-          probeFixedIntervalSeconds
-          probeRandomMinIntervalSeconds
-          probeRandomMaxIntervalSeconds
           modelMappings {
             from
             to
@@ -460,12 +440,7 @@ const BULK_UPDATE_CHANNEL_ORDERING_MUTATION = `
         orderingWeight
         settings {
           extraModelPrefix
-          probeEnabled
           probeFrequency
-          probeIntervalMode
-          probeFixedIntervalSeconds
-          probeRandomMinIntervalSeconds
-          probeRandomMaxIntervalSeconds
           modelMappings {
             from
             to
@@ -576,12 +551,7 @@ const QUERY_CHANNELS_QUERY = `
           defaultTestModel
           settings {
             extraModelPrefix
-            probeEnabled
             probeFrequency
-            probeIntervalMode
-            probeFixedIntervalSeconds
-            probeRandomMinIntervalSeconds
-            probeRandomMaxIntervalSeconds
             modelMappings {
               from
               to

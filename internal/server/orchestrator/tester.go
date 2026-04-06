@@ -3,13 +3,15 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/samber/lo"
 	"github.com/tidwall/gjson"
 
-	"github.com/looplj/axonhub/internal/log"
+	entchannel "github.com/looplj/axonhub/internal/ent/channel"
 	"github.com/looplj/axonhub/internal/objects"
 	"github.com/looplj/axonhub/internal/pkg/xjson"
 	"github.com/looplj/axonhub/internal/server/biz"
@@ -18,6 +20,8 @@ import (
 	"github.com/looplj/axonhub/llm/pipeline"
 	"github.com/looplj/axonhub/llm/pipeline/stream"
 	"github.com/looplj/axonhub/llm/streams"
+	"github.com/looplj/axonhub/llm/transformer"
+	"github.com/looplj/axonhub/llm/transformer/anthropic"
 	"github.com/looplj/axonhub/llm/transformer/openai"
 )
 
@@ -80,7 +84,13 @@ func (processor *TestChannelOrchestrator) TestChannel(
 	modelID *string,
 	proxy *httpclient.ProxyConfig,
 ) (*TestChannelResult, error) {
-	inbound := openai.NewInboundTransformer()
+	channel, err := processor.channelService.GetChannel(ctx, channelID.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	inbound := selectTestChannelInboundTransformer(channel, lo.FromPtr(modelID))
+
 	// Create ChatCompletionOrchestrator for this test request
 	chatProcessor := &ChatCompletionOrchestrator{
 		channelSelector: NewSpecifiedChannelSelector(processor.channelService, channelID),
@@ -105,11 +115,6 @@ func (processor *TestChannelOrchestrator) TestChannel(
 		modelCircuitBreaker:        processor.modelCircuitBreaker,
 	}
 
-	channel, err := processor.channelService.GetChannel(ctx, channelID.ID)
-	if err != nil {
-		return nil, err
-	}
-
 	testModel := lo.FromPtr(modelID)
 	if testModel == "" {
 		testModel = channel.DefaultTestModel
@@ -118,36 +123,9 @@ func (processor *TestChannelOrchestrator) TestChannel(
 	// Check if the channel requires streaming
 	useStream := channel != nil && channel.Policies.Stream == objects.CapabilityPolicyRequire
 
-	// Create a simple test request
-	llmRequest := &llm.Request{
-		Model: testModel,
-		Messages: []llm.Message{
-			{
-				Role: "system",
-				Content: llm.MessageContent{
-					Content: lo.ToPtr("You are a helpful assistant."),
-				},
-			},
-			{
-				Role: "user",
-				Content: llm.MessageContent{
-					MultipleContent: []llm.MessageContentPart{
-						{
-							Type: "text",
-							Text: lo.ToPtr("Hello world, I'm AxonHub."),
-						},
-						{
-							Type: "text",
-							Text: lo.ToPtr("Please tell me who you are?"),
-						},
-					},
-				},
-			},
-		},
-		MaxCompletionTokens: lo.ToPtr(int64(256)),
-		Stream:              lo.ToPtr(useStream),
-	}
-
+	// Create a simple test request. Anthropic message requests require max_tokens,
+	// while the unified request model primarily uses max_completion_tokens.
+	llmRequest := buildTestChannelRequest(testModel, useStream, inbound.APIFormat())
 	body, err := json.Marshal(llmRequest)
 	if err != nil {
 		return nil, err
@@ -176,13 +154,12 @@ func (processor *TestChannelOrchestrator) TestChannel(
 
 	// Handle streaming response
 	if rawResponse.ChatCompletionStream != nil {
-		return processor.handleStreamResponse(ctx, rawResponse.ChatCompletionStream, startTime)
+		return processor.handleStreamResponse(ctx, rawResponse.ChatCompletionStream, startTime, inbound)
 	}
 
 	latency := time.Since(startTime).Seconds()
 
-	// Handle non-streaming response
-	response, err := xjson.To[llm.Response](rawResponse.ChatCompletion.Body)
+	messageText, err := parseTestChannelResponseBody(rawResponse.ChatCompletion.Body, inbound.APIFormat())
 	if err != nil {
 		return &TestChannelResult{
 			Latency: latency,
@@ -192,21 +169,73 @@ func (processor *TestChannelOrchestrator) TestChannel(
 		}, nil
 	}
 
-	if len(response.Choices) == 0 {
-		return &TestChannelResult{
-			Latency: latency,
-			Success: false,
-			Message: lo.ToPtr(""),
-			Error:   lo.ToPtr("No message in response"),
-		}, nil
-	}
-
 	return &TestChannelResult{
 		Latency: latency,
 		Success: true,
-		Message: response.Choices[0].Message.Content.Content,
+		Message: lo.ToPtr(messageText),
 		Error:   nil,
 	}, nil
+}
+
+func buildTestChannelRequest(modelID string, useStream bool, apiFormat llm.APIFormat) *llm.Request {
+	req := &llm.Request{
+		Model: modelID,
+		Messages: []llm.Message{
+			{
+				Role: "system",
+				Content: llm.MessageContent{
+					Content: lo.ToPtr("You are a helpful assistant."),
+				},
+			},
+			{
+				Role: "user",
+				Content: llm.MessageContent{
+					MultipleContent: []llm.MessageContentPart{
+						{
+							Type: "text",
+							Text: lo.ToPtr("Hello world, I'm AxonHub."),
+						},
+						{
+							Type: "text",
+							Text: lo.ToPtr("Please tell me who you are?"),
+						},
+					},
+				},
+			},
+		},
+		MaxCompletionTokens: lo.ToPtr(int64(256)),
+		Stream:              lo.ToPtr(useStream),
+	}
+
+	if apiFormat == llm.APIFormatAnthropicMessage {
+		req.MaxTokens = lo.ToPtr(int64(256))
+	}
+
+	return req
+}
+
+func selectTestChannelInboundTransformer(channel *biz.Channel, modelID string) transformer.Inbound {
+	if shouldUseAnthropicMessages(channel, modelID) {
+		return anthropic.NewInboundTransformer()
+	}
+
+	return openai.NewInboundTransformer()
+}
+
+func shouldUseAnthropicMessages(channel *biz.Channel, modelID string) bool {
+	if channel == nil {
+		return strings.HasPrefix(strings.ToLower(modelID), "claude-")
+	}
+
+	if channel.Type.IsAnthropic() || channel.Type == entchannel.TypeAnthropicAWS || channel.Type == entchannel.TypeAnthropicGcp {
+		return true
+	}
+
+	if channel.Type.IsAnthropicLike() || channel.Type == entchannel.TypeClaudecode {
+		return true
+	}
+
+	return strings.HasPrefix(strings.ToLower(modelID), "claude-")
 }
 
 // handleStreamResponse processes a streaming response and accumulates the content.
@@ -214,13 +243,13 @@ func (processor *TestChannelOrchestrator) handleStreamResponse(
 	ctx context.Context,
 	stream streams.Stream[*httpclient.StreamEvent],
 	startTime time.Time,
+	inbound transformer.Inbound,
 ) (*TestChannelResult, error) {
 	defer func() {
 		_ = stream.Close()
 	}()
 
-	// Accumulate stream chunks
-	var accumulatedContent string
+	var chunks []*httpclient.StreamEvent
 
 	for stream.Next() {
 		select {
@@ -228,7 +257,7 @@ func (processor *TestChannelOrchestrator) handleStreamResponse(
 			return &TestChannelResult{
 				Latency: time.Since(startTime).Seconds(),
 				Success: false,
-				Message: lo.ToPtr(accumulatedContent),
+				Message: lo.ToPtr(""),
 				Error:   lo.ToPtr(ctx.Err().Error()),
 			}, nil
 		default:
@@ -239,22 +268,7 @@ func (processor *TestChannelOrchestrator) handleStreamResponse(
 			continue
 		}
 
-		// The stream may end with a "[DONE]" message which is not valid JSON.
-		if string(event.Data) == "[DONE]" {
-			continue
-		}
-
-		// Parse the stream event data
-		var chunk llm.Response
-		if err := json.Unmarshal(event.Data, &chunk); err != nil {
-			log.Warn(ctx, "failed to unmarshal stream event data", log.Cause(err), log.ByteString("data", event.Data))
-			continue
-		}
-
-		// Accumulate content from the first choice
-		if len(chunk.Choices) > 0 && chunk.Choices[0].Delta != nil && chunk.Choices[0].Delta.Content.Content != nil {
-			accumulatedContent += *chunk.Choices[0].Delta.Content.Content
-		}
+		chunks = append(chunks, event)
 	}
 
 	// Calculate latency after processing all stream events
@@ -264,7 +278,7 @@ func (processor *TestChannelOrchestrator) handleStreamResponse(
 		return &TestChannelResult{
 			Latency: latency,
 			Success: false,
-			Message: lo.ToPtr(accumulatedContent),
+			Message: lo.ToPtr(""),
 			Error:   lo.ToPtr(err.Error()),
 		}, nil
 	}
@@ -278,19 +292,83 @@ func (processor *TestChannelOrchestrator) handleStreamResponse(
 		}, nil
 	}
 
-	if accumulatedContent == "" {
+	body, _, err := inbound.AggregateStreamChunks(ctx, chunks)
+	if err != nil {
 		return &TestChannelResult{
 			Latency: latency,
 			Success: false,
 			Message: lo.ToPtr(""),
-			Error:   lo.ToPtr("No content in stream response"),
+			Error:   lo.ToPtr(err.Error()),
+		}, nil
+	}
+
+	messageText, err := parseTestChannelResponseBody(body, inbound.APIFormat())
+	if err != nil {
+		return &TestChannelResult{
+			Latency: latency,
+			Success: false,
+			Message: lo.ToPtr(""),
+			Error:   lo.ToPtr(err.Error()),
 		}, nil
 	}
 
 	return &TestChannelResult{
 		Latency: latency,
 		Success: true,
-		Message: lo.ToPtr(accumulatedContent),
+		Message: lo.ToPtr(messageText),
 		Error:   nil,
 	}, nil
+}
+
+func parseTestChannelResponseBody(body []byte, apiFormat llm.APIFormat) (string, error) {
+	switch apiFormat {
+	case llm.APIFormatAnthropicMessage:
+		resp, err := xjson.To[anthropic.Message](body)
+		if err != nil {
+			return "", err
+		}
+
+		var textParts []string
+		for _, block := range resp.Content {
+			if block.Type == "text" && block.Text != nil {
+				textParts = append(textParts, *block.Text)
+			}
+		}
+
+		if len(textParts) > 0 {
+			return strings.Join(textParts, ""), nil
+		}
+
+		if resp.ID != "" || len(resp.Content) > 0 {
+			return "", nil
+		}
+
+		return "", fmt.Errorf("no message in response")
+	default:
+		resp, err := xjson.To[llm.Response](body)
+		if err != nil {
+			return "", err
+		}
+
+		if len(resp.Choices) == 0 {
+			return "", fmt.Errorf("no message in response")
+		}
+
+		if resp.Choices[0].Message.Content.Content != nil {
+			return *resp.Choices[0].Message.Content.Content, nil
+		}
+
+		if len(resp.Choices[0].Message.Content.MultipleContent) > 0 {
+			var textParts []string
+			for _, part := range resp.Choices[0].Message.Content.MultipleContent {
+				if part.Type == "text" && part.Text != nil {
+					textParts = append(textParts, *part.Text)
+				}
+			}
+
+			return strings.Join(textParts, ""), nil
+		}
+
+		return "", nil
+	}
 }

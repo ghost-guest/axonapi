@@ -2,7 +2,14 @@ package gc
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"math"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"entgo.io/ent/dialect"
@@ -11,6 +18,7 @@ import (
 
 	entsql "entgo.io/ent/dialect/sql"
 
+	"github.com/looplj/axonhub/internal/authz"
 	"github.com/looplj/axonhub/internal/ent"
 	"github.com/looplj/axonhub/internal/ent/channelprobe"
 	"github.com/looplj/axonhub/internal/ent/request"
@@ -27,6 +35,8 @@ import (
 // This can be overridden for testing.
 var defaultBatchSize = 500
 
+const logCleanupMarkerSuffix = ".cleanup.marker"
+
 type Config struct {
 	CRON          string `json:"cron" yaml:"cron" conf:"cron" validate:"required"`
 	VacuumEnabled bool   `json:"vacuum_enabled" yaml:"vacuum_enabled" conf:"vacuum_enabled"`
@@ -40,6 +50,7 @@ type Worker struct {
 	Executor           executors.ScheduledExecutor
 	Ent                *ent.Client
 	Config             Config
+	LogConfig          log.Config
 	CancelFunc         context.CancelFunc
 }
 
@@ -47,6 +58,7 @@ type Params struct {
 	fx.In
 
 	Config             Config
+	LogConfig          log.Config
 	SystemService      *biz.SystemService
 	DataStorageService *biz.DataStorageService
 	Client             *ent.Client
@@ -60,7 +72,15 @@ func NewWorker(params Params) *Worker {
 		Executor:           executors.NewPoolScheduleExecutor(executors.WithMaxConcurrent(1)),
 		Ent:                params.Client,
 		Config:             params.Config,
+		LogConfig:          params.LogConfig,
 	}
+}
+
+type managedLogFile struct {
+	Path      string
+	Size      int64
+	ModTime   time.Time
+	IsCurrent bool
 }
 
 // deleteInBatches deletes records in batches to avoid memory issues
@@ -215,7 +235,290 @@ func (w *Worker) runCleanup(ctx context.Context, manual bool) {
 		}
 	}
 
+	if err := w.cleanupLogFiles(ctx); err != nil {
+		log.Error(ctx, "Failed to cleanup log files", log.Cause(err))
+	}
+
 	log.Info(ctx, "Automatic cleanup process completed")
+}
+
+func (w *Worker) cleanupLogFiles(ctx context.Context) error {
+	fileCfg := w.LogConfig.File
+	fileCfg.Cleanup = w.resolveLogCleanupConfig(ctx)
+	cleanupCfg := fileCfg.Cleanup
+
+	if !cleanupCfg.Enabled || w.LogConfig.Output != "file" {
+		return nil
+	}
+
+	files, markerPath, err := collectManagedLogFiles(fileCfg.Path)
+	if err != nil {
+		return err
+	}
+
+	if len(files) == 0 {
+		return nil
+	}
+
+	totalBefore := sumManagedLogFileSizes(files)
+	deletedCount := 0
+
+	if cleanupCfg.CleanupIntervalDays > 0 {
+		shouldRun, err := shouldRunLogCleanup(markerPath, cleanupCfg.CleanupIntervalDays, time.Now())
+		if err != nil {
+			return err
+		}
+
+		if shouldRun {
+			deleted, err := deleteManagedLogFiles(files, func(f managedLogFile) bool { return !f.IsCurrent })
+			if err != nil {
+				return err
+			}
+
+			deletedCount += deleted
+
+			if err := touchLogCleanupMarker(markerPath, time.Now()); err != nil {
+				return err
+			}
+
+			files, _, err = collectManagedLogFiles(fileCfg.Path)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	limitBytes := logCleanupLimitBytes(cleanupCfg.MaxTotalSizeGB)
+	if limitBytes > 0 {
+		deleted, err := deleteOldestLogsUntilWithinLimit(files, limitBytes)
+		if err != nil {
+			return err
+		}
+		deletedCount += deleted
+	}
+
+	if deletedCount == 0 {
+		return nil
+	}
+
+	files, _, err = collectManagedLogFiles(fileCfg.Path)
+	if err != nil {
+		return err
+	}
+
+	log.Info(
+		ctx,
+		"Cleaned up log files",
+		log.String("path", fileCfg.Path),
+		log.Int("deleted_files", deletedCount),
+		log.Int64("total_size_before_bytes", totalBefore),
+		log.Int64("total_size_after_bytes", sumManagedLogFileSizes(files)),
+	)
+
+	return nil
+}
+
+func (w *Worker) resolveLogCleanupConfig(ctx context.Context) log.CleanupConfig {
+	cleanupCfg := w.LogConfig.File.Cleanup
+	if w.SystemService == nil {
+		return cleanupCfg
+	}
+
+	settings, err := authz.RunWithSystemBypass(
+		ctx,
+		"gc-log-cleanup-settings",
+		func(bypassCtx context.Context) (*biz.SystemGeneralSettings, error) {
+			return w.SystemService.GeneralSettings(bypassCtx)
+		},
+	)
+	if err != nil {
+		log.Error(ctx, "Failed to load log cleanup settings from system settings", log.Cause(err))
+		return cleanupCfg
+	}
+
+	if settings == nil {
+		return cleanupCfg
+	}
+
+	return settings.Log.Cleanup.ToLogCleanupConfig()
+}
+
+func collectManagedLogFiles(logPath string) ([]managedLogFile, string, error) {
+	if strings.TrimSpace(logPath) == "" {
+		return nil, "", nil
+	}
+
+	cleanPath := filepath.Clean(logPath)
+	dir := filepath.Dir(cleanPath)
+	if dir == "" {
+		dir = "."
+	}
+
+	base := filepath.Base(cleanPath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, logCleanupMarkerPath(cleanPath), nil
+		}
+		return nil, "", fmt.Errorf("failed to read log directory %s: %w", dir, err)
+	}
+
+	files := make([]managedLogFile, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		name := entry.Name()
+		if !isManagedLogFileName(name, base) {
+			continue
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to stat log file %s: %w", filepath.Join(dir, name), err)
+		}
+
+		files = append(files, managedLogFile{
+			Path:      filepath.Join(dir, name),
+			Size:      info.Size(),
+			ModTime:   info.ModTime(),
+			IsCurrent: name == base,
+		})
+	}
+
+	return files, logCleanupMarkerPath(cleanPath), nil
+}
+
+func isManagedLogFileName(name, base string) bool {
+	if name == base {
+		return true
+	}
+
+	ext := filepath.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+
+	if ext == "" {
+		return strings.HasPrefix(name, base+"-")
+	}
+
+	return strings.HasPrefix(name, stem+"-") && strings.HasSuffix(name, ext)
+}
+
+func logCleanupMarkerPath(logPath string) string {
+	dir := filepath.Dir(logPath)
+	base := filepath.Base(logPath)
+	return filepath.Join(dir, "."+base+logCleanupMarkerSuffix)
+}
+
+func shouldRunLogCleanup(markerPath string, intervalDays int, now time.Time) (bool, error) {
+	if intervalDays <= 0 {
+		return false, nil
+	}
+
+	info, err := os.Stat(markerPath)
+	if err == nil {
+		interval := time.Duration(intervalDays) * 24 * time.Hour
+		return now.Sub(info.ModTime()) >= interval, nil
+	}
+
+	if errors.Is(err, fs.ErrNotExist) {
+		return true, nil
+	}
+
+	return false, fmt.Errorf("failed to stat log cleanup marker %s: %w", markerPath, err)
+}
+
+func touchLogCleanupMarker(markerPath string, now time.Time) error {
+	if err := os.MkdirAll(filepath.Dir(markerPath), 0o750); err != nil {
+		return fmt.Errorf("failed to create log marker directory: %w", err)
+	}
+
+	file, err := os.OpenFile(markerPath, os.O_CREATE|os.O_RDWR, 0o640)
+	if err != nil {
+		return fmt.Errorf("failed to open log cleanup marker %s: %w", markerPath, err)
+	}
+	defer func() {
+		_ = file.Close()
+	}()
+
+	if err := os.Chtimes(markerPath, now, now); err != nil {
+		return fmt.Errorf("failed to update log cleanup marker %s: %w", markerPath, err)
+	}
+
+	return nil
+}
+
+func deleteManagedLogFiles(files []managedLogFile, shouldDelete func(managedLogFile) bool) (int, error) {
+	deleted := 0
+	for _, file := range files {
+		if !shouldDelete(file) {
+			continue
+		}
+
+		if err := os.Remove(file.Path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return deleted, fmt.Errorf("failed to remove log file %s: %w", file.Path, err)
+		}
+
+		deleted++
+	}
+
+	return deleted, nil
+}
+
+func deleteOldestLogsUntilWithinLimit(files []managedLogFile, limitBytes int64) (int, error) {
+	totalSize := sumManagedLogFileSizes(files)
+	if limitBytes <= 0 || totalSize <= limitBytes {
+		return 0, nil
+	}
+
+	rotated := make([]managedLogFile, 0, len(files))
+	for _, file := range files {
+		if !file.IsCurrent {
+			rotated = append(rotated, file)
+		}
+	}
+
+	sort.Slice(rotated, func(i, j int) bool {
+		return rotated[i].ModTime.Before(rotated[j].ModTime)
+	})
+
+	deleted := 0
+	for _, file := range rotated {
+		if totalSize <= limitBytes {
+			break
+		}
+
+		if err := os.Remove(file.Path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return deleted, fmt.Errorf("failed to remove log file %s: %w", file.Path, err)
+		}
+
+		totalSize -= file.Size
+		deleted++
+	}
+
+	return deleted, nil
+}
+
+func sumManagedLogFileSizes(files []managedLogFile) int64 {
+	var total int64
+	for _, file := range files {
+		total += file.Size
+	}
+	return total
+}
+
+func logCleanupLimitBytes(limitGB float64) int64 {
+	if limitGB <= 0 {
+		return 0
+	}
+
+	limit := limitGB * 1024 * 1024 * 1024
+	if limit >= float64(math.MaxInt64) {
+		return math.MaxInt64
+	}
+
+	return int64(limit)
 }
 
 // cleanupRequests deletes requests older than the specified number of days.

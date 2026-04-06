@@ -13,7 +13,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
+import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
@@ -58,7 +58,6 @@ import {
   ChannelType,
   ApiFormat,
   ChannelProbeFrequency,
-  ChannelProbeIntervalMode,
   createChannelInputSchema,
   updateChannelInputSchema,
 } from '../data/schema';
@@ -79,80 +78,16 @@ interface Props {
 }
 
 const MAX_MODELS_DISPLAY = 2;
-const FOLLOW_SYSTEM_PROBE_INTERVAL_MODE = '__system__';
-const DEFAULT_FIXED_PROBE_INTERVAL_SECONDS = 60 * 60;
-const DEFAULT_RANDOM_PROBE_MIN_SECONDS = 30 * 60;
-const DEFAULT_RANDOM_PROBE_MAX_SECONDS = 2 * 60 * 60;
-const PROBE_INTERVAL_UNIT_SECONDS = {
-  minutes: 60,
-  hours: 60 * 60,
-  days: 24 * 60 * 60,
-} as const;
-
-type ProbeIntervalUnit = keyof typeof PROBE_INTERVAL_UNIT_SECONDS;
-
-const PROBE_INTERVAL_MODE_OPTIONS: Array<{ value: ChannelProbeIntervalMode; labelKey: string }> = [
-  { value: '', labelKey: 'channels.dialogs.fields.probeIntervalMode.options.system' },
-  { value: 'fixed', labelKey: 'channels.dialogs.fields.probeIntervalMode.options.fixed' },
-  { value: 'random', labelKey: 'channels.dialogs.fields.probeIntervalMode.options.random' },
-];
-
-const PROBE_INTERVAL_UNIT_OPTIONS: Array<{ value: ProbeIntervalUnit; labelKey: string }> = [
-  { value: 'minutes', labelKey: 'channels.dialogs.fields.probeIntervalUnit.options.minutes' },
-  { value: 'hours', labelKey: 'channels.dialogs.fields.probeIntervalUnit.options.hours' },
-  { value: 'days', labelKey: 'channels.dialogs.fields.probeIntervalUnit.options.days' },
+const FOLLOW_SYSTEM_PROBE_FREQUENCY = '__system__';
+const CHANNEL_PROBE_FREQUENCY_OPTIONS: Array<{ value: ChannelProbeFrequency; labelKey: string }> = [
+  { value: '', labelKey: 'channels.dialogs.fields.probeFrequency.options.system' },
+  { value: '1m', labelKey: 'channels.dialogs.fields.probeFrequency.options.1m' },
+  { value: '5m', labelKey: 'channels.dialogs.fields.probeFrequency.options.5m' },
+  { value: '30m', labelKey: 'channels.dialogs.fields.probeFrequency.options.30m' },
+  { value: '1h', labelKey: 'channels.dialogs.fields.probeFrequency.options.1h' },
 ];
 
 const duplicateNameRegex = /^(.*) \((\d+)\)$/;
-
-function secondsFromLegacyProbeFrequency(frequency?: ChannelProbeFrequency | null): number | undefined {
-  switch (frequency) {
-    case '1m':
-      return 60;
-    case '5m':
-      return 5 * 60;
-    case '30m':
-      return 30 * 60;
-    case '1h':
-      return 60 * 60;
-    default:
-      return undefined;
-  }
-}
-
-function splitProbeInterval(seconds?: number | null): { value: number; unit: ProbeIntervalUnit } {
-  const normalizedSeconds = Math.max(0, Math.trunc(seconds || 0));
-  if (normalizedSeconds > 0 && normalizedSeconds % PROBE_INTERVAL_UNIT_SECONDS.days === 0) {
-    return { value: normalizedSeconds / PROBE_INTERVAL_UNIT_SECONDS.days, unit: 'days' };
-  }
-  if (normalizedSeconds > 0 && normalizedSeconds % PROBE_INTERVAL_UNIT_SECONDS.hours === 0) {
-    return { value: normalizedSeconds / PROBE_INTERVAL_UNIT_SECONDS.hours, unit: 'hours' };
-  }
-  if (normalizedSeconds > 0 && normalizedSeconds % PROBE_INTERVAL_UNIT_SECONDS.minutes === 0) {
-    return { value: normalizedSeconds / PROBE_INTERVAL_UNIT_SECONDS.minutes, unit: 'minutes' };
-  }
-  return { value: Math.max(1, Math.ceil(normalizedSeconds / PROBE_INTERVAL_UNIT_SECONDS.minutes)), unit: 'minutes' };
-}
-
-function intervalToSeconds(value: number, unit: ProbeIntervalUnit): number {
-  const normalizedValue = Math.max(0, Math.trunc(value || 0));
-  return normalizedValue * PROBE_INTERVAL_UNIT_SECONDS[unit];
-}
-
-function normalizeChannelProbeSettings(settings?: Channel['settings'] | null) {
-  const legacyFixedInterval = secondsFromLegacyProbeFrequency(settings?.probeFrequency);
-  const mode = (settings?.probeIntervalMode || (legacyFixedInterval ? 'fixed' : '')) as ChannelProbeIntervalMode;
-
-  return {
-    ...settings,
-    probeEnabled: settings?.probeEnabled ?? true,
-    probeFrequency: settings?.probeFrequency || '',
-    probeIntervalMode: mode,
-    probeFixedIntervalSeconds: settings?.probeFixedIntervalSeconds ?? legacyFixedInterval ?? DEFAULT_FIXED_PROBE_INTERVAL_SECONDS,
-    probeRandomMinIntervalSeconds: settings?.probeRandomMinIntervalSeconds ?? DEFAULT_RANDOM_PROBE_MIN_SECONDS,
-    probeRandomMaxIntervalSeconds: settings?.probeRandomMaxIntervalSeconds ?? DEFAULT_RANDOM_PROBE_MAX_SECONDS,
-  };
-}
 
 // Custom hook for debounced value
 function useDebounce<T>(value: T, delay: number): T {
@@ -301,7 +236,6 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
   const isEdit = !!currentRow;
   const isDuplicate = !!duplicateFromRow && !isEdit;
   const initialRow: Channel | undefined = currentRow || duplicateFromRow;
-  const normalizedInitialSettings = useMemo(() => normalizeChannelProbeSettings(initialRow?.settings), [initialRow]);
   const createChannel = useCreateChannel();
   const updateChannel = useUpdateChannel();
   const fetchModels = useFetchModels();
@@ -341,24 +275,6 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
   const [authMode, setAuthMode] = useState<'official' | 'third-party'>('official');
   const [patternError, setPatternError] = useState<string | null>(null);
   const dialogContentRef = useRef<HTMLDivElement>(null);
-  const initialFixedProbeInterval = useMemo(
-    () => splitProbeInterval(normalizedInitialSettings.probeFixedIntervalSeconds),
-    [normalizedInitialSettings.probeFixedIntervalSeconds]
-  );
-  const initialRandomProbeMinInterval = useMemo(
-    () => splitProbeInterval(normalizedInitialSettings.probeRandomMinIntervalSeconds),
-    [normalizedInitialSettings.probeRandomMinIntervalSeconds]
-  );
-  const initialRandomProbeMaxInterval = useMemo(
-    () => splitProbeInterval(normalizedInitialSettings.probeRandomMaxIntervalSeconds),
-    [normalizedInitialSettings.probeRandomMaxIntervalSeconds]
-  );
-  const [fixedProbeIntervalValue, setFixedProbeIntervalValue] = useState(initialFixedProbeInterval.value);
-  const [fixedProbeIntervalUnit, setFixedProbeIntervalUnit] = useState<ProbeIntervalUnit>(initialFixedProbeInterval.unit);
-  const [randomProbeMinValue, setRandomProbeMinValue] = useState(initialRandomProbeMinInterval.value);
-  const [randomProbeMinUnit, setRandomProbeMinUnit] = useState<ProbeIntervalUnit>(initialRandomProbeMinInterval.unit);
-  const [randomProbeMaxValue, setRandomProbeMaxValue] = useState(initialRandomProbeMaxInterval.value);
-  const [randomProbeMaxUnit, setRandomProbeMaxUnit] = useState<ProbeIntervalUnit>(initialRandomProbeMaxInterval.unit);
 
   // Debounced search values for better performance
   const debouncedFetchedModelsSearch = useDebounce(fetchedModelsSearch, 300);
@@ -598,7 +514,14 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
             defaultTestModel: currentRow.defaultTestModel,
             tags: currentRow.tags || [],
             remark: currentRow.remark || '',
-            settings: normalizedInitialSettings,
+            settings: currentRow.settings
+              ? {
+                  ...currentRow.settings,
+                  probeFrequency: currentRow.settings.probeFrequency || '',
+                }
+              : {
+                  probeFrequency: '',
+                },
             credentials: {
               // OAuth 类型 (codex/claudecode/antigravity) 的凭据存储在 apiKey 字段，不放入 apiKeys
               apiKey: currentRow.credentials?.apiKey || undefined,
@@ -622,7 +545,14 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
               defaultTestModel: duplicateFromRow.defaultTestModel,
               tags: duplicateFromRow.tags || [],
               remark: duplicateFromRow.remark || '',
-              settings: normalizedInitialSettings,
+              settings: duplicateFromRow.settings
+                ? {
+                    ...duplicateFromRow.settings,
+                    probeFrequency: duplicateFromRow.settings.probeFrequency || '',
+                  }
+                : {
+                    probeFrequency: '',
+                  },
               credentials: {
                 // OAuth 类型 (codex/claudecode/antigravity) 的凭据存储在 apiKey 字段，不放入 apiKeys
                 apiKey: duplicateFromRow.credentials?.apiKey || undefined,
@@ -651,7 +581,10 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
               defaultTestModel: '',
               tags: [],
               remark: '',
-              settings: normalizedInitialSettings,
+              settings: {
+              probeEnabled: true,
+                probeFrequency: '',
+              },
             },
   });
 
@@ -678,49 +611,9 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
     form.setValue('name', nextName);
     hasAutoSetDuplicateNameRef.current = true;
   }, [open, isDuplicate, duplicateFromRow, allChannelNamesLoaded, allChannelNames, form]);
-
-  useEffect(() => {
-    setFixedProbeIntervalValue(initialFixedProbeInterval.value);
-    setFixedProbeIntervalUnit(initialFixedProbeInterval.unit);
-    setRandomProbeMinValue(initialRandomProbeMinInterval.value);
-    setRandomProbeMinUnit(initialRandomProbeMinInterval.unit);
-    setRandomProbeMaxValue(initialRandomProbeMaxInterval.value);
-    setRandomProbeMaxUnit(initialRandomProbeMaxInterval.unit);
-  }, [initialFixedProbeInterval, initialRandomProbeMaxInterval, initialRandomProbeMinInterval]);
-
   const selectedType = form.watch('type') as ChannelType | undefined;
   const watchedAutoSync = form.watch('autoSyncSupportedModels');
   const watchedAutoSyncPattern = form.watch('autoSyncModelPattern');
-  const probeEnabled = form.watch('settings.probeEnabled') ?? true;
-  const probeIntervalMode = (form.watch('settings.probeIntervalMode') ?? '') as ChannelProbeIntervalMode;
-
-  useEffect(() => {
-    form.setValue('supportedModels', supportedModels, {
-      shouldDirty: true,
-      shouldValidate: true,
-    });
-    form.setValue('manualModels', manualModels, {
-      shouldDirty: true,
-    });
-
-    const currentDefaultTestModel = form.getValues('defaultTestModel');
-    if (supportedModels.length === 0) {
-      if (currentDefaultTestModel) {
-        form.setValue('defaultTestModel', '', {
-          shouldDirty: true,
-          shouldValidate: true,
-        });
-      }
-      return;
-    }
-
-    if (!currentDefaultTestModel || !supportedModels.includes(currentDefaultTestModel)) {
-      form.setValue('defaultTestModel', supportedModels[0], {
-        shouldDirty: true,
-        shouldValidate: true,
-      });
-    }
-  }, [form, manualModels, supportedModels]);
 
   const isCodexType = (selectedType || derivedChannelType) === 'codex';
   const isAntigravityType = (selectedType || derivedChannelType) === 'antigravity';
@@ -1101,54 +994,6 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
       void _error;
     }
   };
-
-  const handleFormSubmit = useCallback(
-    async (event?: React.FormEvent<HTMLFormElement>) => {
-      event?.preventDefault();
-
-      const rawValues = form.getValues();
-      const normalizedDefaultTestModel =
-        supportedModels.length === 0
-          ? ''
-          : rawValues.defaultTestModel && supportedModels.includes(rawValues.defaultTestModel)
-            ? rawValues.defaultTestModel
-            : supportedModels[0];
-
-      const submitCandidate = {
-        ...rawValues,
-        type: (rawValues.type || derivedChannelType) as ChannelType,
-        supportedModels,
-        manualModels,
-        defaultTestModel: normalizedDefaultTestModel,
-      };
-
-      const parsed = formSchema.safeParse(submitCandidate);
-      if (!parsed.success) {
-        form.clearErrors();
-
-        for (const issue of parsed.error.issues) {
-          if (issue.path.length === 0) {
-            continue;
-          }
-
-          form.setError(issue.path.join('.') as any, {
-            type: 'manual',
-            message: issue.message,
-          });
-        }
-
-        const firstMessage = parsed.error.issues[0]?.message;
-        if (firstMessage) {
-          toast.error(firstMessage);
-        }
-        return;
-      }
-
-      form.clearErrors();
-      await onSubmit(parsed.data);
-    },
-    [derivedChannelType, form, formSchema, manualModels, onSubmit, supportedModels]
-  );
 
   const addModel = () => {
     if (newModel.trim() && !supportedModels.includes(newModel.trim())) {
@@ -1558,7 +1403,7 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
               className={`flex min-h-0 flex-1 flex-col overflow-hidden py-1 transition-all duration-300 ${showFetchedModelsPanel || showSupportedModelsPanel || showApiKeysPanel ? 'pr-2' : 'pr-0'}`}
             >
               <Form {...form}>
-                <form id='channel-form' onSubmit={handleFormSubmit} className='flex min-h-0 flex-1 flex-col space-y-6 p-0.5'>
+                <form id='channel-form' onSubmit={form.handleSubmit(onSubmit)} className='flex min-h-0 flex-1 flex-col space-y-6 p-0.5'>
                   {/* Provider Selection - Left Side */}
                   <div className='flex min-h-0 flex-1 flex-col gap-4 overflow-hidden md:flex-row md:gap-6'>
                     <div className='flex max-h-48 min-h-0 w-full flex-shrink-0 flex-col md:max-h-none md:w-60'>
@@ -2360,224 +2205,43 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
 
                       <FormField
                         control={form.control}
-                        name='settings.probeEnabled'
+                        name='settings.probeFrequency'
                         render={({ field }) => (
                           <FormItem className='grid grid-cols-1 items-start gap-x-6 gap-y-2 md:grid-cols-8'>
                             <FormLabel className='pt-2 font-medium md:col-span-2 md:text-right'>
-                              {t('channels.dialogs.fields.probeEnabled.label')}
+                              {t('channels.dialogs.fields.probeFrequency.label')}
                             </FormLabel>
-                            <div className='flex items-center space-x-2 md:col-span-6'>
-                              <FormControl>
-                                <Switch
-                                  checked={field.value ?? true}
-                                  onCheckedChange={(checked) => field.onChange(checked)}
-                                />
-                              </FormControl>
-                              <FormDescription className='text-xs'>
-                                {t('channels.dialogs.fields.probeEnabled.description')}
-                              </FormDescription>
+                            <div className='space-y-1 md:col-span-6'>
+                              <Select
+                                value={field.value || FOLLOW_SYSTEM_PROBE_FREQUENCY}
+                                onValueChange={(value) => {
+                                  field.onChange(value === FOLLOW_SYSTEM_PROBE_FREQUENCY ? '' : value);
+                                }}
+                              >
+                                <FormControl>
+                                  <SelectTrigger>
+                                    <SelectValue placeholder={t('channels.dialogs.fields.probeFrequency.placeholder')} />
+                                  </SelectTrigger>
+                                </FormControl>
+                                <SelectContent>
+                                  {CHANNEL_PROBE_FREQUENCY_OPTIONS.map((option) => (
+                                    <SelectItem
+                                      key={option.value || FOLLOW_SYSTEM_PROBE_FREQUENCY}
+                                      value={option.value || FOLLOW_SYSTEM_PROBE_FREQUENCY}
+                                    >
+                                      {t(option.labelKey)}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              <p className='text-muted-foreground text-xs'>
+                                {t('channels.dialogs.fields.probeFrequency.description')}
+                              </p>
+                              <FormMessage />
                             </div>
                           </FormItem>
                         )}
                       />
-
-                      <FormField
-                        control={form.control}
-                        name='settings.probeIntervalMode'
-                        render={({ field }) => {
-                          if (!probeEnabled) return null;
-                          return (
-                            <FormItem className='grid grid-cols-1 items-start gap-x-6 gap-y-2 md:grid-cols-8'>
-                              <FormLabel className='pt-2 font-medium md:col-span-2 md:text-right'>
-                                {t('channels.dialogs.fields.probeIntervalMode.label')}
-                              </FormLabel>
-                              <div className='space-y-1 md:col-span-6'>
-                                <Select
-                                  value={field.value || FOLLOW_SYSTEM_PROBE_INTERVAL_MODE}
-                                  onValueChange={(value) => {
-                                    const nextValue = value === FOLLOW_SYSTEM_PROBE_INTERVAL_MODE ? '' : value;
-                                    field.onChange(nextValue);
-                                    form.setValue('settings.probeFrequency', '', { shouldDirty: true });
-                                  }}
-                                >
-                                  <FormControl>
-                                    <SelectTrigger>
-                                      <SelectValue placeholder={t('channels.dialogs.fields.probeIntervalMode.placeholder')} />
-                                    </SelectTrigger>
-                                  </FormControl>
-                                  <SelectContent>
-                                    {PROBE_INTERVAL_MODE_OPTIONS.map((option) => (
-                                      <SelectItem
-                                        key={option.value || FOLLOW_SYSTEM_PROBE_INTERVAL_MODE}
-                                        value={option.value || FOLLOW_SYSTEM_PROBE_INTERVAL_MODE}
-                                      >
-                                        {t(option.labelKey)}
-                                      </SelectItem>
-                                    ))}
-                                  </SelectContent>
-                                </Select>
-                                <p className='text-muted-foreground text-xs'>
-                                  {t('channels.dialogs.fields.probeIntervalMode.description')}
-                                </p>
-                                <FormMessage />
-                              </div>
-                            </FormItem>
-                          );
-                        }}
-                      />
-
-                      {probeEnabled && probeIntervalMode === 'fixed' && (
-                        <FormField
-                          control={form.control}
-                          name='settings.probeFixedIntervalSeconds'
-                          render={({ field }) => (
-                            <FormItem className='grid grid-cols-1 items-start gap-x-6 gap-y-2 md:grid-cols-8'>
-                              <FormLabel className='pt-2 font-medium md:col-span-2 md:text-right'>
-                                {t('channels.dialogs.fields.probeFixedInterval.label')}
-                              </FormLabel>
-                              <div className='space-y-1 md:col-span-6'>
-                                <div className='flex gap-2'>
-                                  <Input
-                                    type='number'
-                                    min={1}
-                                    value={fixedProbeIntervalValue}
-                                    onChange={(event) => {
-                                      const nextValue = Math.max(1, Number(event.target.value) || 0);
-                                      setFixedProbeIntervalValue(nextValue);
-                                      field.onChange(intervalToSeconds(nextValue, fixedProbeIntervalUnit));
-                                    }}
-                                  />
-                                  <Select
-                                    value={fixedProbeIntervalUnit}
-                                    onValueChange={(value) => {
-                                      const nextUnit = value as ProbeIntervalUnit;
-                                      setFixedProbeIntervalUnit(nextUnit);
-                                      field.onChange(intervalToSeconds(fixedProbeIntervalValue, nextUnit));
-                                    }}
-                                  >
-                                    <SelectTrigger className='w-[140px]'>
-                                      <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                      {PROBE_INTERVAL_UNIT_OPTIONS.map((option) => (
-                                        <SelectItem key={option.value} value={option.value}>
-                                          {t(option.labelKey)}
-                                        </SelectItem>
-                                      ))}
-                                    </SelectContent>
-                                  </Select>
-                                </div>
-                                <p className='text-muted-foreground text-xs'>
-                                  {t('channels.dialogs.fields.probeFixedInterval.description')}
-                                </p>
-                                <FormMessage />
-                              </div>
-                            </FormItem>
-                          )}
-                        />
-                      )}
-
-                      {probeEnabled && probeIntervalMode === 'random' && (
-                        <>
-                          <FormField
-                            control={form.control}
-                            name='settings.probeRandomMinIntervalSeconds'
-                            render={({ field }) => (
-                              <FormItem className='grid grid-cols-1 items-start gap-x-6 gap-y-2 md:grid-cols-8'>
-                                <FormLabel className='pt-2 font-medium md:col-span-2 md:text-right'>
-                                  {t('channels.dialogs.fields.probeRandomMinInterval.label')}
-                                </FormLabel>
-                                <div className='space-y-1 md:col-span-6'>
-                                  <div className='flex gap-2'>
-                                    <Input
-                                      type='number'
-                                      min={1}
-                                      value={randomProbeMinValue}
-                                      onChange={(event) => {
-                                        const nextValue = Math.max(1, Number(event.target.value) || 0);
-                                        setRandomProbeMinValue(nextValue);
-                                        field.onChange(intervalToSeconds(nextValue, randomProbeMinUnit));
-                                      }}
-                                    />
-                                    <Select
-                                      value={randomProbeMinUnit}
-                                      onValueChange={(value) => {
-                                        const nextUnit = value as ProbeIntervalUnit;
-                                        setRandomProbeMinUnit(nextUnit);
-                                        field.onChange(intervalToSeconds(randomProbeMinValue, nextUnit));
-                                      }}
-                                    >
-                                      <SelectTrigger className='w-[140px]'>
-                                        <SelectValue />
-                                      </SelectTrigger>
-                                      <SelectContent>
-                                        {PROBE_INTERVAL_UNIT_OPTIONS.map((option) => (
-                                          <SelectItem key={option.value} value={option.value}>
-                                            {t(option.labelKey)}
-                                          </SelectItem>
-                                        ))}
-                                      </SelectContent>
-                                    </Select>
-                                  </div>
-                                  <p className='text-muted-foreground text-xs'>
-                                    {t('channels.dialogs.fields.probeRandomMinInterval.description')}
-                                  </p>
-                                  <FormMessage />
-                                </div>
-                              </FormItem>
-                            )}
-                          />
-
-                          <FormField
-                            control={form.control}
-                            name='settings.probeRandomMaxIntervalSeconds'
-                            render={({ field }) => (
-                              <FormItem className='grid grid-cols-1 items-start gap-x-6 gap-y-2 md:grid-cols-8'>
-                                <FormLabel className='pt-2 font-medium md:col-span-2 md:text-right'>
-                                  {t('channels.dialogs.fields.probeRandomMaxInterval.label')}
-                                </FormLabel>
-                                <div className='space-y-1 md:col-span-6'>
-                                  <div className='flex gap-2'>
-                                    <Input
-                                      type='number'
-                                      min={1}
-                                      value={randomProbeMaxValue}
-                                      onChange={(event) => {
-                                        const nextValue = Math.max(1, Number(event.target.value) || 0);
-                                        setRandomProbeMaxValue(nextValue);
-                                        field.onChange(intervalToSeconds(nextValue, randomProbeMaxUnit));
-                                      }}
-                                    />
-                                    <Select
-                                      value={randomProbeMaxUnit}
-                                      onValueChange={(value) => {
-                                        const nextUnit = value as ProbeIntervalUnit;
-                                        setRandomProbeMaxUnit(nextUnit);
-                                        field.onChange(intervalToSeconds(randomProbeMaxValue, nextUnit));
-                                      }}
-                                    >
-                                      <SelectTrigger className='w-[140px]'>
-                                        <SelectValue />
-                                      </SelectTrigger>
-                                      <SelectContent>
-                                        {PROBE_INTERVAL_UNIT_OPTIONS.map((option) => (
-                                          <SelectItem key={option.value} value={option.value}>
-                                            {t(option.labelKey)}
-                                          </SelectItem>
-                                        ))}
-                                      </SelectContent>
-                                    </Select>
-                                  </div>
-                                  <p className='text-muted-foreground text-xs'>
-                                    {t('channels.dialogs.fields.probeRandomMaxInterval.description')}
-                                  </p>
-                                  <FormMessage />
-                                </div>
-                              </FormItem>
-                            )}
-                          />
-                        </>
-                      )}
 
                       <FormField
                         control={form.control}

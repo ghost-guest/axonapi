@@ -28,7 +28,8 @@ type DoubaoHandlersParams struct {
 	PromptService   *biz.PromptService
 	PromptProtectionRuleService *biz.PromptProtectionRuleService
 	QuotaService    *biz.QuotaService
-	HttpClient      *httpclient.HttpClient
+	HttpClient           *httpclient.HttpClient
+	ModelCircuitBreaker *biz.ModelCircuitBreaker
 }
 
 type DoubaoHandlers struct {
@@ -53,6 +54,7 @@ func NewDoubaoHandlers(params DoubaoHandlersParams) *DoubaoHandlers {
 			params.PromptService,
 			params.QuotaService,
 			params.PromptProtectionRuleService,
+				params.ModelCircuitBreaker,
 		),
 		InboundTransformer: inbound,
 	}

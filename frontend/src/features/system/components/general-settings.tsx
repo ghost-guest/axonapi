@@ -5,7 +5,10 @@ import { Loader2, Save } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Separator } from '@/components/ui/separator';
+import { Switch } from '@/components/ui/switch';
 import { AutoCompleteSelect } from '@/components/auto-complete-select';
 import { useSystemContext } from '../context/system-context';
 import { currencyCodes } from '../data/currencies';
@@ -20,6 +23,9 @@ export function GeneralSettings() {
 
   const [currencyCode, setCurrencyCode] = useState('USD');
   const [timezone, setTimezone] = useState('UTC');
+  const [logCleanupEnabled, setLogCleanupEnabled] = useState(false);
+  const [logCleanupMaxTotalSizeGB, setLogCleanupMaxTotalSizeGB] = useState(0);
+  const [logCleanupIntervalDays, setLogCleanupIntervalDays] = useState(0);
 
   const currencyItems = React.useMemo(
     () =>
@@ -37,6 +43,9 @@ export function GeneralSettings() {
     if (settings) {
       setCurrencyCode(settings.currencyCode || 'USD');
       setTimezone(settings.timezone || 'UTC');
+      setLogCleanupEnabled(settings.log?.cleanup?.enabled ?? false);
+      setLogCleanupMaxTotalSizeGB(settings.log?.cleanup?.maxTotalSizeGB ?? 0);
+      setLogCleanupIntervalDays(settings.log?.cleanup?.cleanupIntervalDays ?? 0);
     }
   }, [settings]);
 
@@ -46,13 +55,26 @@ export function GeneralSettings() {
       await updateSettings.mutateAsync({
         currencyCode: currencyCode.trim(),
         timezone: timezone.trim(),
+        log: {
+          cleanup: {
+            enabled: logCleanupEnabled,
+            maxTotalSizeGB: Math.max(0, Number.isFinite(logCleanupMaxTotalSizeGB) ? logCleanupMaxTotalSizeGB : 0),
+            cleanupIntervalDays: Math.max(0, Math.trunc(Number.isFinite(logCleanupIntervalDays) ? logCleanupIntervalDays : 0)),
+          },
+        },
       });
     } finally {
       setIsLoading(false);
     }
   };
 
-  const hasChanges = settings ? settings.currencyCode !== currencyCode || settings.timezone !== timezone : false;
+  const hasChanges = settings
+    ? settings.currencyCode !== currencyCode ||
+      settings.timezone !== timezone ||
+      (settings.log?.cleanup?.enabled ?? false) !== logCleanupEnabled ||
+      (settings.log?.cleanup?.maxTotalSizeGB ?? 0) !== logCleanupMaxTotalSizeGB ||
+      (settings.log?.cleanup?.cleanupIntervalDays ?? 0) !== logCleanupIntervalDays
+    : false;
 
   if (isLoadingSettings) {
     return (
@@ -97,6 +119,62 @@ export function GeneralSettings() {
               />
             </div>
             <div className='text-muted-foreground text-sm'>{t('system.general.timezone.description')}</div>
+          </div>
+
+          <Separator />
+
+          <div className='space-y-4'>
+            <div className='space-y-1'>
+              <div className='text-base font-medium'>{t('system.general.logCleanup.title')}</div>
+              <div className='text-muted-foreground text-sm'>{t('system.general.logCleanup.description')}</div>
+            </div>
+
+            <div className='flex items-center justify-between'>
+              <div className='space-y-0.5'>
+                <Label htmlFor='log-cleanup-enabled'>{t('system.general.logCleanup.enabled.label')}</Label>
+                <div className='text-muted-foreground text-sm'>{t('system.general.logCleanup.enabled.description')}</div>
+              </div>
+              <Switch
+                id='log-cleanup-enabled'
+                checked={logCleanupEnabled}
+                onCheckedChange={setLogCleanupEnabled}
+                disabled={isLoading}
+              />
+            </div>
+
+            <div className='grid gap-4 md:grid-cols-2'>
+              <div className='space-y-2'>
+                <Label htmlFor='log-cleanup-max-total-size'>{t('system.general.logCleanup.maxTotalSizeGB.label')}</Label>
+                <Input
+                  id='log-cleanup-max-total-size'
+                  type='number'
+                  min='0'
+                  step='0.1'
+                  value={logCleanupMaxTotalSizeGB}
+                  onChange={(e) => setLogCleanupMaxTotalSizeGB(Math.max(0, parseFloat(e.target.value) || 0))}
+                  disabled={isLoading}
+                  className='max-w-xs'
+                />
+                <div className='text-muted-foreground text-sm'>{t('system.general.logCleanup.maxTotalSizeGB.description')}</div>
+              </div>
+
+              <div className='space-y-2'>
+                <Label htmlFor='log-cleanup-interval-days'>{t('system.general.logCleanup.cleanupIntervalDays.label')}</Label>
+                <Input
+                  id='log-cleanup-interval-days'
+                  type='number'
+                  min='0'
+                  step='1'
+                  value={logCleanupIntervalDays}
+                  onChange={(e) => setLogCleanupIntervalDays(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                  disabled={isLoading}
+                  className='max-w-xs'
+                />
+                <div className='text-muted-foreground text-sm'>{t('system.general.logCleanup.cleanupIntervalDays.description')}</div>
+              </div>
+            </div>
+
+            <div className='text-muted-foreground text-sm'>{t('system.general.logCleanup.hint')}</div>
           </div>
         </CardContent>
       </Card>

@@ -4,17 +4,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/looplj/axonhub/internal/ent"
+	entchannel "github.com/looplj/axonhub/internal/ent/channel"
 	"github.com/looplj/axonhub/internal/log"
 	"github.com/looplj/axonhub/internal/pkg/xcontext"
 	"github.com/looplj/axonhub/internal/server/biz"
 	"github.com/looplj/axonhub/llm"
+	"github.com/looplj/axonhub/llm/auth"
 	"github.com/looplj/axonhub/llm/httpclient"
 	"github.com/looplj/axonhub/llm/pipeline"
 	"github.com/looplj/axonhub/llm/streams"
 	"github.com/looplj/axonhub/llm/transformer"
+	"github.com/looplj/axonhub/llm/transformer/anthropic"
 )
 
 // OutboundPersistentStream wraps a stream and tracks all responses for final saving to database.
@@ -302,10 +306,67 @@ func isCompletedAggregatedOutboundResponse(meta llm.ResponseMeta) bool {
 
 var errSkipCandidateByCircuitBreaker = errors.New("skip candidate by circuit breaker")
 
+const maxRequestAttempts = 3
+
 // PersistentOutboundTransformer wraps an outbound transformer with shared persistence state.
 type PersistentOutboundTransformer struct {
 	wrapped transformer.Outbound
 	state   *PersistenceState
+}
+
+func (p *PersistentOutboundTransformer) ensureTriedCandidateIndices() {
+	if p.state != nil {
+		p.state.ensureFallbackRuntimeState()
+	}
+}
+
+func (p *PersistentOutboundTransformer) currentCandidateForAttempt() (int, *ChannelModelsCandidate, error) {
+	if p.state == nil || len(p.state.ChannelModelsCandidates) == 0 {
+		return 0, nil, fmt.Errorf("%w: all candidates exhausted", biz.ErrInternal)
+	}
+
+	p.ensureTriedCandidateIndices()
+	if _, skipped := p.state.TriedCandidateIndices[p.state.CurrentCandidateIndex]; skipped {
+		return p.nextCandidateAfterCurrent()
+	}
+	if p.state.CurrentCandidateIndex >= len(p.state.ChannelModelsCandidates) {
+		return 0, nil, fmt.Errorf("%w: all candidates exhausted", biz.ErrInternal)
+	}
+
+	candidate := p.state.ChannelModelsCandidates[p.state.CurrentCandidateIndex]
+	if candidate == nil {
+		return p.nextCandidateAfterCurrent()
+	}
+
+	return p.state.CurrentCandidateIndex, candidate, nil
+}
+
+func (p *PersistentOutboundTransformer) nextCandidateAfterCurrent() (int, *ChannelModelsCandidate, error) {
+	if p.state == nil {
+		return 0, nil, errors.New("missing persistence state")
+	}
+
+	p.ensureTriedCandidateIndices()
+	for idx := p.state.CurrentCandidateIndex + 1; idx < len(p.state.ChannelModelsCandidates); idx++ {
+		if _, skipped := p.state.TriedCandidateIndices[idx]; skipped {
+			continue
+		}
+		candidate := p.state.ChannelModelsCandidates[idx]
+		if candidate == nil {
+			continue
+		}
+		return idx, candidate, nil
+	}
+
+	return 0, nil, errors.New("no more candidates available for retry")
+}
+
+func (p *PersistentOutboundTransformer) markCurrentCandidateTried() {
+	if p.state == nil {
+		return
+	}
+	p.ensureTriedCandidateIndices()
+	p.state.TriedCandidateIndices[p.state.CurrentCandidateIndex] = struct{}{}
 }
 
 // APIFormat returns the API format of the transformer.
@@ -323,29 +384,148 @@ func (p *PersistentOutboundTransformer) TransformRequest(ctx context.Context, ll
 		return nil, errors.New("no candidates available: candidates should be selected by inbound transformer")
 	}
 
-	// Select current candidate for this attempt
-	if p.state.CurrentCandidateIndex >= len(p.state.ChannelModelsCandidates) {
-		return nil, fmt.Errorf("%w: all candidates exhausted", biz.ErrInternal)
+	candidateIndex, candidate, err := p.currentCandidateForAttempt()
+	if err != nil {
+		return nil, err
+	}
+	if p.state.TotalAttempts >= maxRequestAttempts {
+		return nil, fmt.Errorf("%w: request attempt limit exceeded", biz.ErrInternal)
 	}
 
-	candidate := p.state.ChannelModelsCandidates[p.state.CurrentCandidateIndex]
+	if candidateIndex != p.state.CurrentCandidateIndex || p.state.CurrentCandidate == nil {
+		if err := p.activateCandidate(ctx, candidateIndex, candidate, "dispatch", nil); err != nil {
+			return nil, err
+		}
+	}
+
 	entry := candidate.Models[p.state.CurrentModelIndex]
+	llmRequest, sanitizationDecision := sanitizeRequestForCandidate(ctx, llmRequest, candidate, p.state.InboundAPIFormat)
+	p.state.TotalAttempts++
+	p.state.AttemptHistory = append(p.state.AttemptHistory, attemptHistoryEntry{
+		AttemptNo:      p.state.TotalAttempts,
+		ChannelID:      candidate.Channel.ID,
+		ChannelName:    candidate.Channel.Name,
+		RequestedModel: p.state.OriginalModel,
+		ActualModel:    entry.ActualModel,
+		StartedAt:      time.Now(),
+		Result:         "started",
+	})
 
-	p.state.CurrentCandidate = candidate
-	p.wrapped = candidate.Channel.Outbound
-
-	log.Debug(ctx, "using candidate",
+	logFields := []log.Field{
 		log.String("channel", candidate.Channel.Name),
+		log.String("channel_type", candidate.Channel.Type.String()),
 		log.String("request_model", p.state.OriginalModel),
 		log.String("actual_model", entry.ActualModel),
-	)
-
-	llmRequest.Model = entry.ActualModel
+		log.String("outbound_api_format", string(p.wrapped.APIFormat())),
+		log.Int("request_attempt", p.state.TotalAttempts),
+		log.Int("max_request_attempts", maxRequestAttempts),
+	}
+	if sanitizationDecision != nil {
+		logFields = append(logFields,
+			log.Bool("payload_rebuilt", sanitizationDecision.Rebuilt),
+			log.String("source_api_format", string(sanitizationDecision.SourceAPIFormat)),
+			log.String("target_api_format", string(sanitizationDecision.TargetAPIFormat)),
+			log.Any("removed_transformer_metadata_keys", sanitizationDecision.RemovedTransformerMetadataKeys),
+			log.Any("kept_transformer_metadata_keys", sanitizationDecision.KeptTransformerMetadataKeys),
+		)
+	}
+	log.Debug(ctx, "using candidate", logFields...)
 
 	// Apply channel transform options to create a new request
 	llmRequest = applyTransformOptions(llmRequest, candidate.Channel.Settings)
 
 	return p.wrapped.TransformRequest(ctx, llmRequest)
+}
+
+func resolveCandidateOutboundTransformer(
+	ctx context.Context,
+	candidate *ChannelModelsCandidate,
+	inboundAPIFormat llm.APIFormat,
+	actualModel string,
+) transformer.Outbound {
+	if candidate == nil || candidate.Channel == nil {
+		return nil
+	}
+
+	if runtimeOutbound, err := buildAnthropicCompatOutbound(candidate, inboundAPIFormat, actualModel); err == nil && runtimeOutbound != nil {
+		return runtimeOutbound
+	} else if err != nil {
+		log.Warn(ctx, "failed to build runtime anthropic compatibility outbound",
+			log.Int("channel_id", candidate.Channel.ID),
+			log.String("channel_name", candidate.Channel.Name),
+			log.String("channel_type", candidate.Channel.Type.String()),
+			log.String("actual_model", actualModel),
+			log.Cause(err),
+		)
+	}
+
+	if candidate.Channel.Outbound == nil {
+		return nil
+	}
+
+	return candidate.Channel.Outbound
+}
+
+func buildAnthropicCompatOutbound(
+	candidate *ChannelModelsCandidate,
+	inboundAPIFormat llm.APIFormat,
+	actualModel string,
+) (transformer.Outbound, error) {
+	if candidate == nil || candidate.Channel == nil {
+		return nil, nil
+	}
+	if inboundAPIFormat != llm.APIFormatAnthropicMessage {
+		return nil, nil
+	}
+	if !strings.HasPrefix(strings.ToLower(actualModel), "claude-") {
+		return nil, nil
+	}
+
+	switch candidate.Channel.Type {
+	case entchannel.TypeOpenaiResponses, entchannel.TypeCodex:
+	default:
+		return nil, nil
+	}
+
+	apiKeyProvider := resolveCandidateAPIKeyProvider(candidate.Channel)
+	if apiKeyProvider == nil {
+		return nil, fmt.Errorf("missing api key for anthropic compatibility outbound")
+	}
+
+	return anthropic.NewOutboundTransformerWithConfig(&anthropic.Config{
+		Type:            anthropic.PlatformLongCat,
+		BaseURL:         candidate.Channel.BaseURL,
+		AccountIdentity: fmt.Sprintf("%d", candidate.Channel.ID),
+		APIKeyProvider:  apiKeyProvider,
+	})
+}
+
+func resolveCandidateAPIKeyProvider(ch *biz.Channel) auth.APIKeyProvider {
+	if ch == nil {
+		return nil
+	}
+
+	enabled := ch.GetEnabledAPIKeys()
+	switch len(enabled) {
+	case 0:
+	case 1:
+		return auth.NewStaticKeyProvider(enabled[0])
+	default:
+		return biz.NewTraceStickyKeyProvider(ch)
+	}
+
+	enabled = ch.Credentials.GetEnabledAPIKeys(ch.DisabledAPIKeys)
+	switch len(enabled) {
+	case 0:
+		return nil
+	case 1:
+		return auth.NewStaticKeyProvider(enabled[0])
+	default:
+		// Channels loaded through ChannelService already have cached enabled keys and will
+		// hit the sticky provider branch above. Fall back to the first enabled key here to
+		// keep runtime compatibility for ad-hoc channel instances used in tests.
+		return auth.NewStaticKeyProvider(enabled[0])
+	}
 }
 
 func (p *PersistentOutboundTransformer) TransformResponse(ctx context.Context, response *httpclient.Response) (*llm.Response, error) {
@@ -411,25 +591,39 @@ func (p *PersistentOutboundTransformer) GetRequestedModel() string {
 // HasMoreChannels returns true if there are more candidates available for retry.
 // It implements the pipeline.Retryable interface.
 func (p *PersistentOutboundTransformer) HasMoreChannels() bool {
-	return p.state.CurrentCandidateIndex+1 < len(p.state.ChannelModelsCandidates)
+	if p.state == nil {
+		return false
+	}
+	if p.state.TotalAttempts >= maxRequestAttempts {
+		return false
+	}
+
+	_, _, err := p.nextCandidateAfterCurrent()
+	return err == nil
 }
 
 // NextChannel moves to the next available candidate for retry.
 // It implements the pipeline.Retryable interface.
 func (p *PersistentOutboundTransformer) NextChannel(ctx context.Context) error {
-	p.state.CurrentCandidateIndex++
-
-	p.state.CurrentModelIndex = 0
-	if p.state.CurrentCandidateIndex >= len(p.state.ChannelModelsCandidates) {
-		return errors.New("no more candidates available for retry")
+	if p.state == nil {
+		return errors.New("missing persistence state")
+	}
+	if p.state.TotalAttempts >= maxRequestAttempts {
+		return errors.New("request attempt limit exceeded")
 	}
 
-	// Reset request execution for the new candidate
-	p.state.RequestExec = nil
+	if p.state.CurrentCandidate != nil {
+		p.markCurrentCandidateTried()
+	}
 
-	candidate := p.state.ChannelModelsCandidates[p.state.CurrentCandidateIndex]
-	p.state.CurrentCandidate = candidate
-	p.wrapped = candidate.Channel.Outbound
+	candidateIndex, candidate, err := p.nextCandidateAfterCurrent()
+	if err != nil {
+		return err
+	}
+
+	if err := p.activateCandidate(ctx, candidateIndex, candidate, "fallback", ctx.Err()); err != nil {
+		return err
+	}
 
 	if log.DebugEnabled(ctx) {
 		model := candidate.Models[0].ActualModel
@@ -437,6 +631,9 @@ func (p *PersistentOutboundTransformer) NextChannel(ctx context.Context) error {
 			log.String("channel", candidate.Channel.Name),
 			log.String("model", model),
 			log.Int("index", p.state.CurrentCandidateIndex),
+			log.Int("request_attempt", p.state.TotalAttempts+1),
+			log.Int("max_request_attempts", maxRequestAttempts),
+			log.Any("attempt_history", p.state.AttemptHistory),
 		)
 	}
 
@@ -450,61 +647,24 @@ func (p *PersistentOutboundTransformer) CanRetry(err error) bool {
 	if p.state.CurrentCandidate == nil {
 		return false
 	}
+	if p.state.TotalAttempts >= maxRequestAttempts {
+		return false
+	}
 
 	if errors.Is(err, errSkipCandidateByCircuitBreaker) {
 		return false
 	}
 
-	// if there are more models available in the current candidate, try the next model.
-	if p.state.CurrentModelIndex+1 < len(p.state.CurrentCandidate.Models) {
-		return true
-	}
-
-	// otherwise check if the error is retryable.
-	return isRetryableError(err)
+	// Runtime failures should fail over immediately to the next channel and avoid
+	// reusing the same broken channel within the same request.
+	return false
 }
 
 // PrepareForRetry implements the pipeline.ChannelRetryable interface.
-// This will reset the request execution for the same channel, so that the same request can be retried.
-// It will try the next model in the same channel if available.
+// Runtime failures are handled by immediate channel failover, so same-channel retry is disabled.
 func (p *PersistentOutboundTransformer) PrepareForRetry(ctx context.Context) error {
-	candidate := p.state.CurrentCandidate
-
-	// Reset request execution for the same channel.
-	p.state.RequestExec = nil
-
-	// If there's another model in the list, advance to it.
-	if p.state.CurrentModelIndex+1 < len(candidate.Models) {
-		// Increase the model index to the next model.
-		p.state.CurrentModelIndex++
-		p.wrapped = candidate.Channel.Outbound
-
-		if log.DebugEnabled(ctx) {
-			model := candidate.Models[p.state.CurrentModelIndex].ActualModel
-			log.Debug(ctx, "prepared same channel retry for next model",
-				log.Any("channel", candidate.Channel.Name),
-				log.Any("model", model),
-				log.Int("current_candidate_index", p.state.CurrentCandidateIndex),
-				log.Int("current_entry_index", p.state.CurrentModelIndex),
-			)
-		}
-
-		return nil
-	}
-
-	// Otherwise, we're retrying the current (last) model.
-	// It handle the models count less than retry policy.
-	if log.DebugEnabled(ctx) {
-		model := candidate.Models[p.state.CurrentModelIndex].ActualModel
-		log.Debug(ctx, "prepared same channel retry for same model",
-			log.Any("channel", candidate.Channel.Name),
-			log.Any("model", model),
-			log.Int("current_candidate_index", p.state.CurrentCandidateIndex),
-			log.Int("current_entry_index", p.state.CurrentModelIndex),
-		)
-	}
-
-	return nil
+	_ = ctx
+	return errors.New("same-channel retry disabled for runtime failover")
 }
 
 // CustomizeExecutor customizes the executor for the current channel.

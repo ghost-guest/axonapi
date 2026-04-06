@@ -10,9 +10,40 @@ const VERSION_CHECK_STORAGE_KEY = 'axonhub_dismissed_version';
 const VERSION_CHECK_TIMESTAMP_KEY = 'axonhub_version_check_timestamp';
 const VERSION_CHECK_INTERVAL = 10 * 60 * 1000; // 10 minutes in milliseconds
 
+type ParsedVersion = {
+  major: number;
+  minor: number;
+  patch: number;
+};
+
+function parseVersion(version: string): ParsedVersion | null {
+  const normalized = version.trim().replace(/^v/i, '').split('-')[0];
+  const match = normalized.match(/^(\d+)\.(\d+)\.(\d+)$/);
+
+  if (!match) return null;
+
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+  };
+}
+
+function isImportantVersionUpdate(currentVersion: string, latestVersion: string): boolean {
+  const current = parseVersion(currentVersion);
+  const latest = parseVersion(latestVersion);
+
+  // Fall back to prompting when versions are not standard semver strings.
+  if (!current || !latest) return true;
+
+  if (latest.major !== current.major) return latest.major > current.major;
+
+  return latest.minor > current.minor;
+}
+
 /**
  * Hook to check for new versions and show toast notification.
- * Only shows to owners and only once per version.
+ * Only shows to owners and only once per important version.
  */
 export function useVersionCheck() {
   const user = useAuthStore((state) => state.auth.user);
@@ -64,6 +95,7 @@ export function useVersionCheck() {
     if (!isOwner || !updateCheck) return;
 
     if (!updateCheck.hasUpdate) return;
+    if (!isImportantVersionUpdate(updateCheck.currentVersion, updateCheck.latestVersion)) return;
 
     // Check if this version was already dismissed
     const dismissedVersion = localStorage.getItem(VERSION_CHECK_STORAGE_KEY);

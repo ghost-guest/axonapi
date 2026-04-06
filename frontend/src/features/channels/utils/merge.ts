@@ -108,10 +108,6 @@ export function mergeChannelSettingsForUpdate(
     transformOptions: pick('transformOptions', existing?.transformOptions ?? undefined),
     probeEnabled: pick('probeEnabled', existing?.probeEnabled ?? true),
     probeFrequency: pick('probeFrequency', existing?.probeFrequency ?? ''),
-    probeIntervalMode: pick('probeIntervalMode', existing?.probeIntervalMode ?? ''),
-    probeFixedIntervalSeconds: pick('probeFixedIntervalSeconds', existing?.probeFixedIntervalSeconds ?? undefined),
-    probeRandomMinIntervalSeconds: pick('probeRandomMinIntervalSeconds', existing?.probeRandomMinIntervalSeconds ?? undefined),
-    probeRandomMaxIntervalSeconds: pick('probeRandomMaxIntervalSeconds', existing?.probeRandomMaxIntervalSeconds ?? undefined),
   };
 }
 

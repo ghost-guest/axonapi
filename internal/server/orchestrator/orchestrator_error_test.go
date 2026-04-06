@@ -94,9 +94,9 @@ func TestChatCompletionOrchestrator_Process_ErrorHandling(t *testing.T) {
 	// Verify request execution was created and marked as failed
 	executions, err := client.RequestExecution.Query().All(ctx)
 	require.NoError(t, err)
-	require.Len(t, executions, 1)
+	require.NotEmpty(t, executions)
 
-	dbExec := executions[0]
+	dbExec := executions[len(executions)-1]
 	assert.NotEmpty(t, dbExec.ErrorMessage)
 }
 

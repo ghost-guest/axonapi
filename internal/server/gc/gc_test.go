@@ -16,6 +16,7 @@ import (
 	"github.com/looplj/axonhub/internal/ent"
 	"github.com/looplj/axonhub/internal/ent/datastorage"
 	"github.com/looplj/axonhub/internal/ent/enttest"
+	"github.com/looplj/axonhub/internal/log"
 	"github.com/looplj/axonhub/internal/objects"
 	"github.com/looplj/axonhub/internal/pkg/xcache"
 	"github.com/looplj/axonhub/internal/server/biz"
@@ -260,4 +261,78 @@ func TestWorker_cleanupWithZeroDays(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cleanupUsageLogs with negative days failed: %v", err)
 	}
+}
+
+func TestWorker_cleanupLogFilesByTotalSize(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "axonhub.log")
+
+	createSizedLogFile(t, logPath, 10, time.Now())
+	createSizedLogFile(t, filepath.Join(dir, "axonhub-2026-04-01T00-00-00.log"), 8, time.Now().Add(-2*time.Hour))
+	oldestRotated := filepath.Join(dir, "axonhub-2026-04-02T00-00-00.log")
+	createSizedLogFile(t, oldestRotated, 8, time.Now().Add(-4*time.Hour))
+
+	worker := &Worker{
+		LogConfig: log.Config{
+			Output: "file",
+			File: log.FileConfig{
+				Path: logPath,
+				Cleanup: log.CleanupConfig{
+					Enabled:        true,
+					MaxTotalSizeGB: float64(20) / (1024 * 1024 * 1024),
+				},
+			},
+		},
+	}
+
+	err := worker.cleanupLogFiles(context.Background())
+	require.NoError(t, err)
+
+	_, err = os.Stat(oldestRotated)
+	require.ErrorIs(t, err, fs.ErrNotExist)
+
+	_, err = os.Stat(filepath.Join(dir, "axonhub.log"))
+	require.NoError(t, err)
+
+	_, err = os.Stat(filepath.Join(dir, "axonhub-2026-04-01T00-00-00.log"))
+	require.NoError(t, err)
+}
+
+func TestWorker_cleanupLogFilesByInterval(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "axonhub.log")
+	rotatedPath := filepath.Join(dir, "axonhub-2026-04-01T00-00-00.log")
+
+	createSizedLogFile(t, logPath, 10, time.Now())
+	createSizedLogFile(t, rotatedPath, 8, time.Now().Add(-2*time.Hour))
+
+	worker := &Worker{
+		LogConfig: log.Config{
+			Output: "file",
+			File: log.FileConfig{
+				Path: logPath,
+				Cleanup: log.CleanupConfig{
+					Enabled:             true,
+					CleanupIntervalDays: 1,
+				},
+			},
+		},
+	}
+
+	err := worker.cleanupLogFiles(context.Background())
+	require.NoError(t, err)
+
+	_, err = os.Stat(rotatedPath)
+	require.ErrorIs(t, err, fs.ErrNotExist)
+
+	_, err = os.Stat(logCleanupMarkerPath(logPath))
+	require.NoError(t, err)
+}
+
+func createSizedLogFile(t *testing.T, path string, size int, modTime time.Time) {
+	t.Helper()
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(strings.Repeat("x", size)), 0o644))
+	require.NoError(t, os.Chtimes(path, modTime, modTime))
 }

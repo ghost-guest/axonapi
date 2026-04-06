@@ -39,8 +39,9 @@ func (s *PublicBenefitFallbackSelector) Select(ctx context.Context, req *llm.Req
 
 	merged := make([]*ChannelModelsCandidate, 0)
 	indexByKey := map[string]int{}
+	hasSuccessfulSelection := false
 
-	for _, modelID := range modelSequence {
+	for sequenceIndex, modelID := range modelSequence {
 		cloned := *req
 		cloned.Model = modelID
 
@@ -57,8 +58,16 @@ func (s *PublicBenefitFallbackSelector) Select(ctx context.Context, req *llm.Req
 			continue
 		}
 
+		if len(candidates) == 0 {
+			continue
+		}
+
+		if !hasSuccessfulSelection {
+			hasSuccessfulSelection = true
+		}
+
 		for _, candidate := range candidates {
-			key := candidateKeyForMerge(candidate)
+			key := candidateKeyForMerge(candidate, sequenceIndex)
 			if idx, ok := indexByKey[key]; ok {
 				existing := merged[idx]
 				existing.Models = appendUniqueModelEntries(existing.Models, candidate.Models)
@@ -84,15 +93,19 @@ func (s *PublicBenefitFallbackSelector) Select(ctx context.Context, req *llm.Req
 		)
 	}
 
+	if !hasSuccessfulSelection {
+		return nil, nil
+	}
+
 	return merged, nil
 }
 
-func candidateKeyForMerge(candidate *ChannelModelsCandidate) string {
+func candidateKeyForMerge(candidate *ChannelModelsCandidate, sequenceIndex int) string {
 	if candidate == nil || candidate.Channel == nil {
 		return ""
 	}
 
-	return fmt.Sprintf("%d:%d", candidate.Channel.ID, candidate.Priority)
+	return fmt.Sprintf("%d:%d:%d", sequenceIndex, candidate.Channel.ID, candidate.Priority)
 }
 
 func appendUniqueModelEntries(existing []biz.ChannelModelEntry, incoming []biz.ChannelModelEntry) []biz.ChannelModelEntry {

@@ -170,6 +170,18 @@ models:
   AutoDisableChannelStatusInput:
     model:
       - github.com/looplj/axonhub/internal/server/biz.AutoDisableChannelStatus
+  SystemLogSettings:
+    model:
+      - github.com/looplj/axonhub/internal/server/biz.SystemLogSettings
+  SystemLogCleanupSettings:
+    model:
+      - github.com/looplj/axonhub/internal/server/biz.SystemLogCleanupSettings
+  UpdateSystemLogSettingsInput:
+    model:
+      - github.com/looplj/axonhub/internal/server/biz.SystemLogSettings
+  UpdateSystemLogCleanupSettingsInput:
+    model:
+      - github.com/looplj/axonhub/internal/server/biz.SystemLogCleanupSettings
   UpdateAPIKeyProfilesInput:
     model:
       - github.com/looplj/axonhub/internal/objects.APIKeyProfiles

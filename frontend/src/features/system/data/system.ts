@@ -153,11 +153,33 @@ export interface BrandSettings {
 export interface SystemGeneralSettings {
   currencyCode: string;
   timezone: string;
+  log: SystemLogSettings;
 }
 
 export interface UpdateSystemGeneralSettingsInput {
   currencyCode?: string;
   timezone?: string;
+  log?: UpdateSystemLogSettingsInput;
+}
+
+export interface SystemLogSettings {
+  cleanup: SystemLogCleanupSettings;
+}
+
+export interface SystemLogCleanupSettings {
+  enabled: boolean;
+  maxTotalSizeGB: number;
+  cleanupIntervalDays: number;
+}
+
+export interface UpdateSystemLogSettingsInput {
+  cleanup?: UpdateSystemLogCleanupSettingsInput;
+}
+
+export interface UpdateSystemLogCleanupSettingsInput {
+  enabled?: boolean;
+  maxTotalSizeGB?: number;
+  cleanupIntervalDays?: number;
 }
 
 export interface VideoStorageSettings {
@@ -582,6 +604,13 @@ const SYSTEM_GENERAL_SETTINGS_QUERY = `
     systemGeneralSettings {
       currencyCode
       timezone
+      log {
+        cleanup {
+          enabled
+          maxTotalSizeGB
+          cleanupIntervalDays
+        }
+      }
     }
   }
 `;

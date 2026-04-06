@@ -7,6 +7,7 @@ import (
 )
 
 var Module = fx.Module("biz",
+	fx.Provide(NewModelCircuitBreaker),
 	fx.Provide(NewSystemService),
 	fx.Provide(NewAuthService),
 	fx.Provide(NewChannelService),

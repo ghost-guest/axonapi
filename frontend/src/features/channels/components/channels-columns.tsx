@@ -147,15 +147,6 @@ const ActionCell = memo(({ row }: { row: Row<Channel> }) => {
           <DropdownMenuItem
             onClick={() => {
               setCurrentRow(channel);
-              setOpen('settings');
-            }}
-          >
-            <IconAdjustments size={16} className='mr-2' />
-            {t('channels.actions.probeSettings')}
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onClick={() => {
-              setCurrentRow(channel);
               setOpen('price');
             }}
           >

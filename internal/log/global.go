@@ -27,6 +27,11 @@ var defaultConfig = Config{
 		MaxAge:     30,
 		MaxBackups: 10,
 		LocalTime:  true,
+		Cleanup: CleanupConfig{
+			Enabled:             false,
+			MaxTotalSizeGB:      0,
+			CleanupIntervalDays: 0,
+		},
 	},
 }
 
@@ -49,6 +54,11 @@ var globalConfig = Config{
 		MaxAge:     30,
 		MaxBackups: 10,
 		LocalTime:  true,
+		Cleanup: CleanupConfig{
+			Enabled:             false,
+			MaxTotalSizeGB:      0,
+			CleanupIntervalDays: 0,
+		},
 	},
 }
 

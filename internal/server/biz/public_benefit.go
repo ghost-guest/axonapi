@@ -67,6 +67,8 @@ type PublicBenefitUpstreamPolicy struct {
 	Healthy                 bool
 	SupportsRequestedFamily bool
 	AvailableModels         []string
+	RecentProbeSuccessRate  float64
+	RecentProbeRequestCount int
 	Weight                  int
 }
 
@@ -265,6 +267,12 @@ func (s *SystemService) ResolvePublicBenefitUpstreamPolicies(ctx context.Context
 	policies := make([]PublicBenefitUpstreamPolicy, 0, len(cfg.Upstreams))
 	for _, upstream := range cfg.Upstreams {
 		runtime := runtimeByID[upstream.ID]
+		requestCount := int(runtime.TotalRequests)
+		successRate := 0.0
+		if requestCount > 0 {
+			successCount := max(0, requestCount-runtime.ConsecutiveFailures)
+			successRate = float64(successCount) / float64(requestCount)
+		}
 		policies = append(policies, PublicBenefitUpstreamPolicy{
 			UpstreamID:              upstream.ID,
 			BaseURL:                 upstream.BaseURL,
@@ -272,6 +280,8 @@ func (s *SystemService) ResolvePublicBenefitUpstreamPolicies(ctx context.Context
 			Healthy:                 isPublicBenefitUpstreamHealthy(runtime.HealthStatus),
 			SupportsRequestedFamily: upstreamSupportsFamily(upstream, runtime.AvailableModels, family),
 			AvailableModels:         compactModelSequence(runtime.AvailableModels),
+			RecentProbeSuccessRate:  successRate,
+			RecentProbeRequestCount: requestCount,
 			Weight:                  upstream.Weight,
 		})
 	}

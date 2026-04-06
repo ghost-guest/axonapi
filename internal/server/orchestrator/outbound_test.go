@@ -6,14 +6,17 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/samber/lo"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 
 	"github.com/looplj/axonhub/internal/authz"
 	"github.com/looplj/axonhub/internal/ent"
+	"github.com/looplj/axonhub/internal/ent/channel"
 	"github.com/looplj/axonhub/internal/ent/enttest"
 	"github.com/looplj/axonhub/internal/ent/request"
 	"github.com/looplj/axonhub/internal/ent/requestexecution"
+	"github.com/looplj/axonhub/internal/objects"
 	"github.com/looplj/axonhub/internal/server/biz"
 	"github.com/looplj/axonhub/llm"
 	"github.com/looplj/axonhub/llm/httpclient"
@@ -154,10 +157,111 @@ func TestPersistentOutboundTransformer_TransformRequest_OriginalModelRestoration
 			model := gjson.Get(bodyStr, "model")
 			require.Equal(t, tt.expectedFinalModel, model.String())
 
-			// Also verify the llmRequest was modified
-			require.Equal(t, tt.expectedFinalModel, llmRequest.Model)
+			// Verify the original llmRequest remains untouched after sanitization clone
+			require.Equal(t, tt.inputModel, llmRequest.Model)
 		})
 	}
+}
+
+func TestPersistentOutboundTransformer_TransformRequest_UsesAnthropicCompatOutboundForClaudeOnResponsesChannel(t *testing.T) {
+	ctx := context.Background()
+
+	channelModel := &biz.Channel{
+		Channel: &ent.Channel{
+			ID:       2,
+			Name:     "muyuan",
+			Type:     channel.TypeOpenaiResponses,
+			BaseURL:  "https://muyuan.do/v1",
+			Settings: &objects.ChannelSettings{},
+			Credentials: objects.ChannelCredentials{
+				APIKey: "test-key",
+			},
+		},
+		Outbound: &mockTransformer{apiFormat: llm.APIFormatOpenAIResponse},
+	}
+
+	processor := &PersistentOutboundTransformer{
+		wrapped: &mockTransformer{},
+		state: &PersistenceState{
+			OriginalModel:    "claude-sonnet-4-5",
+			InboundAPIFormat: llm.APIFormatAnthropicMessage,
+			ChannelModelsCandidates: []*ChannelModelsCandidate{
+				{
+					Channel: channelModel,
+					Models: []biz.ChannelModelEntry{
+						{RequestModel: "claude-sonnet-4-5", ActualModel: "claude-sonnet-4-5"},
+					},
+				},
+			},
+		},
+	}
+
+	req, err := processor.TransformRequest(ctx, &llm.Request{
+		Model: "claude-sonnet-4-5",
+		Messages: []llm.Message{{
+			Role: "user",
+			Content: llm.MessageContent{
+				Content: lo.ToPtr("reply ok"),
+			},
+		}},
+		MaxTokens: lo.ToPtr(int64(32)),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, req)
+	require.Equal(t, "https://muyuan.do/v1/messages", req.URL)
+	require.Equal(t, llm.APIFormatAnthropicMessage, processor.wrapped.APIFormat())
+	require.NotNil(t, req.Auth)
+	require.Equal(t, httpclient.AuthTypeBearer, req.Auth.Type)
+	require.Equal(t, "2023-06-01", req.Headers.Get("Anthropic-Version"))
+	require.Equal(t, "claude-sonnet-4-5", gjson.GetBytes(req.Body, "model").String())
+}
+
+func TestPersistentOutboundTransformer_TransformRequest_KeepsResponsesOutboundForOpenAIResponsesRequests(t *testing.T) {
+	ctx := context.Background()
+
+	channelModel := &biz.Channel{
+		Channel: &ent.Channel{
+			ID:       3,
+			Name:     "responses",
+			Type:     channel.TypeOpenaiResponses,
+			BaseURL:  "https://responses.example/v1",
+			Settings: &objects.ChannelSettings{},
+			Credentials: objects.ChannelCredentials{
+				APIKey: "test-key",
+			},
+		},
+		Outbound: &mockTransformer{apiFormat: llm.APIFormatOpenAIResponse},
+	}
+
+	processor := &PersistentOutboundTransformer{
+		wrapped: &mockTransformer{},
+		state: &PersistenceState{
+			OriginalModel:    "gpt-5.4",
+			InboundAPIFormat: llm.APIFormatOpenAIResponse,
+			ChannelModelsCandidates: []*ChannelModelsCandidate{
+				{
+					Channel: channelModel,
+					Models: []biz.ChannelModelEntry{
+						{RequestModel: "gpt-5.4", ActualModel: "gpt-5.4"},
+					},
+				},
+			},
+		},
+	}
+
+	req, err := processor.TransformRequest(ctx, &llm.Request{
+		Model: "gpt-5.4",
+		Messages: []llm.Message{{
+			Role: "user",
+			Content: llm.MessageContent{
+				Content: lo.ToPtr("reply ok"),
+			},
+		}},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, req)
+	require.Equal(t, "https://api.example.com/v1/chat/completions", req.URL)
+	require.Equal(t, llm.APIFormatOpenAIResponse, processor.wrapped.APIFormat())
 }
 
 func TestPersistentOutboundTransformer_PrepareForRetry(t *testing.T) {
@@ -172,57 +276,26 @@ func TestPersistentOutboundTransformer_PrepareForRetry(t *testing.T) {
 		Outbound: &mockTransformer{},
 	}
 
-	t.Run("single model, retry should trigger 'reuse same model' logic", func(t *testing.T) {
-		// Case: single model, retry should trigger "reuse same model" logic
+	t.Run("same-channel retry is disabled in favor of immediate failover", func(t *testing.T) {
 		processor := &PersistentOutboundTransformer{
 			wrapped: &mockTransformer{},
 			state: &PersistenceState{
 				CurrentCandidate: &ChannelModelsCandidate{
 					Channel: channel,
-					Models: []biz.ChannelModelEntry{
-						{RequestModel: "gpt-4", ActualModel: "gpt-4"},
-					},
+					Models:  []biz.ChannelModelEntry{{RequestModel: "gpt-4", ActualModel: "gpt-4"}},
 				},
-				CurrentModelIndex: 0,
-				RequestExec:       &ent.RequestExecution{ID: 1},
+				CurrentCandidateIndex: 0,
+				CurrentModelIndex:     0,
+				RequestExec:           &ent.RequestExecution{ID: 1},
+				ChannelModelsCandidates: []*ChannelModelsCandidate{
+					{Channel: channel, Models: []biz.ChannelModelEntry{{RequestModel: "gpt-4", ActualModel: "gpt-4"}}},
+				},
 			},
 		}
 
-		// Execute PrepareForRetry
-		// It should reset RequestExec and do not increase the CurrentModelIndex
 		err := processor.PrepareForRetry(ctx)
-
-		// Assert
-		require.NoError(t, err)
-		require.Zero(t, processor.state.CurrentModelIndex)
-		require.Nil(t, processor.state.RequestExec)
-	})
-
-	t.Run("multiple models, retry should trigger 'reuse same model' logic", func(t *testing.T) {
-		// Case: multiple models, retry should trigger "reuse same model" logic
-		processor := &PersistentOutboundTransformer{
-			wrapped: &mockTransformer{},
-			state: &PersistenceState{
-				CurrentCandidate: &ChannelModelsCandidate{
-					Channel: channel,
-					Models: []biz.ChannelModelEntry{
-						{RequestModel: "gpt-4", ActualModel: "gpt-4"},
-						{RequestModel: "gpt-3.5-turbo", ActualModel: "gpt-3.5-turbo"},
-					},
-				},
-				CurrentModelIndex: 0,
-				RequestExec:       &ent.RequestExecution{ID: 1},
-			},
-		}
-
-		// Execute PrepareForRetry
-		// It should reset RequestExec and do increased the CurrentModelIndex
-		err := processor.PrepareForRetry(ctx)
-
-		// Assert
-		require.NoError(t, err)
-		require.Equal(t, 1, processor.state.CurrentModelIndex)
-		require.Nil(t, processor.state.RequestExec)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "same-channel retry disabled")
 	})
 }
 
@@ -295,7 +368,7 @@ func TestPersistentOutboundTransformer_CanRetry(t *testing.T) {
 		require.False(t, outbound.CanRetry(errSkipCandidateByCircuitBreaker))
 	})
 
-	t.Run("retryable error does not depend on model index", func(t *testing.T) {
+	t.Run("retryable error still does not trigger same-channel retry", func(t *testing.T) {
 		outbound := &PersistentOutboundTransformer{
 			wrapped: &mockTransformer{},
 			state: &PersistenceState{
@@ -304,11 +377,69 @@ func TestPersistentOutboundTransformer_CanRetry(t *testing.T) {
 					Models:  []biz.ChannelModelEntry{{RequestModel: "gpt-4", ActualModel: "gpt-4"}},
 				},
 				CurrentModelIndex: 0,
+				TotalAttempts:     1,
 			},
 		}
 
-		require.True(t, outbound.CanRetry(retryableErr))
+		require.False(t, outbound.CanRetry(retryableErr))
 	})
+}
+
+func TestPersistentOutboundTransformer_PrepareForRetry_MarksCurrentCandidateAndAdvances(t *testing.T) {
+	channelA := &biz.Channel{
+		Channel:  &ent.Channel{ID: 1, Name: "bad-channel"},
+		Outbound: &mockTransformer{},
+	}
+	channelB := &biz.Channel{
+		Channel:  &ent.Channel{ID: 2, Name: "next-channel"},
+		Outbound: &mockTransformer{},
+	}
+
+	processor := &PersistentOutboundTransformer{
+		wrapped: &mockTransformer{},
+		state: &PersistenceState{
+			ChannelModelsCandidates: []*ChannelModelsCandidate{
+				{Channel: channelA, Models: []biz.ChannelModelEntry{{RequestModel: "claude-sonnet-4-6", ActualModel: "claude-sonnet-4-6"}}},
+				{Channel: channelB, Models: []biz.ChannelModelEntry{{RequestModel: "claude-sonnet-4-5", ActualModel: "claude-sonnet-4-5"}}},
+			},
+			CurrentCandidate:      &ChannelModelsCandidate{Channel: channelA, Models: []biz.ChannelModelEntry{{RequestModel: "claude-sonnet-4-6", ActualModel: "claude-sonnet-4-6"}}},
+			CurrentCandidateIndex: 0,
+			CurrentModelIndex:     0,
+			RequestExec:           &ent.RequestExecution{ID: 1},
+			TotalAttempts:         1,
+		},
+	}
+
+	err := processor.PrepareForRetry(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "same-channel retry disabled")
+	require.Equal(t, 0, processor.state.CurrentCandidateIndex)
+	require.Equal(t, 0, processor.state.CurrentModelIndex)
+	require.NotNil(t, processor.state.RequestExec)
+	require.Nil(t, processor.state.TriedCandidateIndices)
+	require.NotNil(t, processor.state.CurrentCandidate)
+}
+
+func TestPersistentOutboundTransformer_CanRetry_StopsAtThreeAttemptsAndNoRepeatCandidates(t *testing.T) {
+	channelA := &biz.Channel{
+		Channel:  &ent.Channel{ID: 1, Name: "bad-channel"},
+		Outbound: &mockTransformer{},
+	}
+	outbound := &PersistentOutboundTransformer{
+		wrapped: &mockTransformer{},
+		state: &PersistenceState{
+			CurrentCandidate:      &ChannelModelsCandidate{Channel: channelA, Models: []biz.ChannelModelEntry{{RequestModel: "claude-sonnet-4-6", ActualModel: "claude-sonnet-4-6"}}},
+			CurrentCandidateIndex: 0,
+			CurrentModelIndex:     0,
+			TotalAttempts:         3,
+			TriedCandidateIndices: map[int]struct{}{0: {}},
+			ChannelModelsCandidates: []*ChannelModelsCandidate{
+				{Channel: channelA, Models: []biz.ChannelModelEntry{{RequestModel: "claude-sonnet-4-6", ActualModel: "claude-sonnet-4-6"}}},
+			},
+		},
+	}
+
+	require.False(t, outbound.CanRetry(&httpclient.Error{StatusCode: http.StatusServiceUnavailable}))
 }
 
 func TestIsCompletedAggregatedOutboundResponse(t *testing.T) {
@@ -587,9 +718,64 @@ func TestPersistentOutboundTransformer_TransformRequest_WithPrepopulatedState(t 
 	require.NoError(t, err)
 	require.NotNil(t, channelRequest)
 
-	// Verify original model was restored
-	require.Equal(t, "gpt-3.5-turbo", llmRequest.Model)
+	// Verify candidate-selected model is applied on outbound dispatch
+	require.Equal(t, "gpt-3.5-turbo", gjson.GetBytes(channelRequest.Body, "model").String())
+	require.Equal(t, "mapped-gpt-4", llmRequest.Model)
 
 	// Verify channel was used
 	require.Equal(t, testChannel, processor.state.CurrentCandidate.Channel)
+}
+
+func TestPersistentOutboundTransformer_NextChannel_ActivatesFallbackState(t *testing.T) {
+	channelA := &biz.Channel{Channel: &ent.Channel{ID: 1, Name: "claude-primary"}, Outbound: &mockTransformer{apiFormat: llm.APIFormatAnthropicMessage}}
+	channelB := &biz.Channel{Channel: &ent.Channel{ID: 2, Name: "gpt-fallback"}, Outbound: &mockTransformer{apiFormat: llm.APIFormatOpenAIResponse}}
+	processor := &PersistentOutboundTransformer{
+		wrapped: &mockTransformer{},
+		state: &PersistenceState{
+			OriginalModel:    "claude-sonnet-4",
+			InboundAPIFormat: llm.APIFormatAnthropicMessage,
+			ChannelModelsCandidates: []*ChannelModelsCandidate{
+				{Channel: channelA, Models: []biz.ChannelModelEntry{{RequestModel: "claude-sonnet-4", ActualModel: "claude-sonnet-4"}}},
+				{Channel: channelB, Models: []biz.ChannelModelEntry{{RequestModel: "gpt-5.4", ActualModel: "gpt-5.4"}}},
+			},
+			CurrentCandidate:      &ChannelModelsCandidate{Channel: channelA, Models: []biz.ChannelModelEntry{{RequestModel: "claude-sonnet-4", ActualModel: "claude-sonnet-4"}}},
+			CurrentCandidateIndex: 0,
+			CurrentModelIndex:     0,
+			RequestExec:           &ent.RequestExecution{ID: 99},
+			TotalAttempts:         1,
+		},
+	}
+
+	err := processor.NextChannel(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, processor.state.CurrentCandidateIndex)
+	require.Equal(t, 0, processor.state.CurrentModelIndex)
+	require.Equal(t, "gpt-5.4", processor.GetCurrentModelID())
+	require.Nil(t, processor.state.RequestExec)
+	require.Contains(t, processor.state.TriedCandidateIndices, 0)
+}
+
+func TestPersistentOutboundTransformer_TransformRequest_UsesActivatedFallbackCandidate(t *testing.T) {
+	channelA := &biz.Channel{Channel: &ent.Channel{ID: 1, Name: "claude-primary", Type: channel.TypeOpenaiResponses, BaseURL: "https://claude.example.com"}, Outbound: &mockTransformer{apiFormat: llm.APIFormatOpenAIResponse}}
+	channelB := &biz.Channel{Channel: &ent.Channel{ID: 2, Name: "gpt-fallback", Type: channel.TypeOpenaiResponses, BaseURL: "https://gpt.example.com"}, Outbound: &mockTransformer{apiFormat: llm.APIFormatOpenAIResponse}}
+	processor := &PersistentOutboundTransformer{
+		wrapped: channelA.Outbound,
+		state: &PersistenceState{
+			OriginalModel:    "claude-sonnet-4",
+			InboundAPIFormat: llm.APIFormatAnthropicMessage,
+			ChannelModelsCandidates: []*ChannelModelsCandidate{
+				{Channel: channelA, Models: []biz.ChannelModelEntry{{RequestModel: "claude-sonnet-4", ActualModel: "claude-sonnet-4"}}},
+				{Channel: channelB, Models: []biz.ChannelModelEntry{{RequestModel: "gpt-5.4", ActualModel: "gpt-5.4"}}},
+			},
+			CurrentCandidateIndex: 1,
+			CurrentCandidate:      &ChannelModelsCandidate{Channel: channelB, Models: []biz.ChannelModelEntry{{RequestModel: "gpt-5.4", ActualModel: "gpt-5.4"}}},
+		},
+	}
+
+	req, err := processor.TransformRequest(context.Background(), &llm.Request{Model: "claude-sonnet-4", Messages: []llm.Message{{Role: "user", Content: llm.MessageContent{Content: lo.ToPtr("hi")}}}})
+	require.NoError(t, err)
+	require.NotNil(t, req)
+	require.Equal(t, 1, processor.state.TotalAttempts)
+	require.Equal(t, "gpt-5.4", processor.state.AttemptHistory[0].ActualModel)
+	require.Equal(t, "gpt-fallback", processor.state.AttemptHistory[0].ChannelName)
 }

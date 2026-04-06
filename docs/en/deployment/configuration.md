@@ -164,6 +164,10 @@ log:
     max_age: 30                 # Max age in days to retain
     max_backups: 10             # Max number of old log files
     local_time: true            # Use local time for rotated files
+    cleanup:
+      enabled: false            # Enable automatic cleanup for the log directory
+      max_total_size_gb: 1      # When total log size exceeds this value, oldest archived logs are deleted first
+      cleanup_interval_days: 7  # Delete archived logs every N days, 0 disables interval cleanup
 ```
 
 **Environment Variables:**
@@ -183,6 +187,9 @@ log:
 - `AXONHUB_LOG_FILE_MAX_SIZE`
 - `AXONHUB_LOG_FILE_MAX_AGE`
 - `AXONHUB_LOG_FILE_MAX_BACKUPS`
+- `AXONHUB_LOG_FILE_CLEANUP_ENABLED`
+- `AXONHUB_LOG_FILE_CLEANUP_MAX_TOTAL_SIZE_GB`
+- `AXONHUB_LOG_FILE_CLEANUP_CLEANUP_INTERVAL_DAYS`
 - `AXONHUB_LOG_FILE_LOCAL_TIME`
 
 ### Metrics Configuration

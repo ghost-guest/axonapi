@@ -51,6 +51,35 @@ func TestPublicBenefitUpstreamSelector_Select_PrefersHealthyMatchedUpstreams(t *
 	require.Equal(t, "unmatched", result[2].Channel.Name)
 }
 
+func TestPublicBenefitUpstreamSelector_Select_PrefersRecentProbeSuccessBeforeWeight(t *testing.T) {
+	healthyLowWeight := &biz.Channel{Channel: &ent.Channel{ID: 11, Name: "recent-success", BaseURL: "https://recent.example"}}
+	healthyHighWeight := &biz.Channel{Channel: &ent.Channel{ID: 12, Name: "higher-weight", BaseURL: "https://weight.example"}}
+
+	selector := WithPublicBenefitUpstreamSelector(
+		&stubCandidateSelector{
+			byModel: map[string][]*ChannelModelsCandidate{
+				"gpt-5.4": {
+					{Channel: healthyHighWeight, Priority: 0, Models: []biz.ChannelModelEntry{{RequestModel: "gpt-5.4", ActualModel: "gpt-5.4"}}},
+					{Channel: healthyLowWeight, Priority: 0, Models: []biz.ChannelModelEntry{{RequestModel: "gpt-5.4", ActualModel: "gpt-5.4"}}},
+				},
+			},
+		},
+		&stubPublicBenefitPolicyResolver{
+			policies: []biz.PublicBenefitUpstreamPolicy{
+				{BaseURL: "https://recent.example", Enabled: true, Healthy: true, SupportsRequestedFamily: true, RecentProbeRequestCount: 6, RecentProbeSuccessRate: 1.0, Weight: 1},
+				{BaseURL: "https://weight.example", Enabled: true, Healthy: true, SupportsRequestedFamily: true, RecentProbeRequestCount: 0, RecentProbeSuccessRate: 0, Weight: 99},
+			},
+		},
+		llm.APIFormatOpenAIResponse,
+	)
+
+	result, err := selector.Select(context.Background(), &llm.Request{Model: "gpt-5.4"})
+	require.NoError(t, err)
+	require.Len(t, result, 2)
+	require.Equal(t, "recent-success", result[0].Channel.Name)
+	require.Equal(t, "higher-weight", result[1].Channel.Name)
+}
+
 func TestPublicBenefitUpstreamSelector_Select_FiltersUnavailableModels(t *testing.T) {
 	channel := &biz.Channel{Channel: &ent.Channel{ID: 4, Name: "runtime-filtered", BaseURL: "https://models.example"}}
 

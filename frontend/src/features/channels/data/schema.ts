@@ -145,78 +145,20 @@ export type ChannelProbeData = z.infer<typeof channelProbeDataSchema>;
 export const channelProbeFrequencySchema = z.enum(['', '1m', '5m', '30m', '1h']).nullable();
 export type ChannelProbeFrequency = z.infer<typeof channelProbeFrequencySchema>;
 
-export const channelProbeIntervalModeSchema = z.enum(['', 'fixed', 'random']).nullable();
-export type ChannelProbeIntervalMode = z.infer<typeof channelProbeIntervalModeSchema>;
-
-const nullablePositiveIntSchema = z.preprocess((value) => {
-  if (value === 0 || value === '0' || value === '') {
-    return undefined;
-  }
-  return value;
-}, z.number().int().positive().optional().nullable());
-
 // Channel Settings
-export const channelSettingsSchema = z
-  .object({
-    extraModelPrefix: z.string().optional(),
-    modelMappings: z.array(modelMappingSchema).optional().nullable(),
-    autoTrimedModelPrefixes: z.array(z.string()).optional().nullable(),
-    hideOriginalModels: z.boolean().optional(),
-    hideMappedModels: z.boolean().optional(),
-    bodyOverrideOperations: z.array(overrideOperationSchema).optional(),
-    headerOverrideOperations: z.array(overrideOperationSchema).optional(),
-    proxy: proxyConfigSchema.optional().nullable(),
-    transformOptions: transformOptionsSchema.optional(),
-    probeEnabled: z.boolean().optional().nullable(),
-    probeFrequency: channelProbeFrequencySchema.optional(),
-    probeIntervalMode: channelProbeIntervalModeSchema.optional(),
-    probeFixedIntervalSeconds: nullablePositiveIntSchema,
-    probeRandomMinIntervalSeconds: nullablePositiveIntSchema,
-    probeRandomMaxIntervalSeconds: nullablePositiveIntSchema,
-  })
-  .superRefine((data, ctx) => {
-    if ((data.probeEnabled ?? true) === false) {
-      return;
-    }
-
-    if (data.probeIntervalMode === 'fixed' && !(data.probeFixedIntervalSeconds && data.probeFixedIntervalSeconds > 0)) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Fixed probe interval must be greater than 0 seconds',
-        path: ['probeFixedIntervalSeconds'],
-      });
-    }
-
-    if (data.probeIntervalMode === 'random') {
-      if (!(data.probeRandomMinIntervalSeconds && data.probeRandomMinIntervalSeconds > 0)) {
-        ctx.addIssue({
-          code: 'custom',
-          message: 'Random probe minimum interval must be greater than 0 seconds',
-          path: ['probeRandomMinIntervalSeconds'],
-        });
-      }
-
-      if (!(data.probeRandomMaxIntervalSeconds && data.probeRandomMaxIntervalSeconds > 0)) {
-        ctx.addIssue({
-          code: 'custom',
-          message: 'Random probe maximum interval must be greater than 0 seconds',
-          path: ['probeRandomMaxIntervalSeconds'],
-        });
-      }
-
-      if (
-        data.probeRandomMinIntervalSeconds &&
-        data.probeRandomMaxIntervalSeconds &&
-        data.probeRandomMaxIntervalSeconds < data.probeRandomMinIntervalSeconds
-      ) {
-        ctx.addIssue({
-          code: 'custom',
-          message: 'Random probe maximum interval must be greater than or equal to minimum interval',
-          path: ['probeRandomMaxIntervalSeconds'],
-        });
-      }
-    }
-  });
+export const channelSettingsSchema = z.object({
+  extraModelPrefix: z.string().optional(),
+  modelMappings: z.array(modelMappingSchema).nullable(),
+  autoTrimedModelPrefixes: z.array(z.string()).optional().nullable(),
+  hideOriginalModels: z.boolean().optional(),
+  hideMappedModels: z.boolean().optional(),
+  bodyOverrideOperations: z.array(overrideOperationSchema).optional(),
+  headerOverrideOperations: z.array(overrideOperationSchema).optional(),
+  proxy: proxyConfigSchema.optional().nullable(),
+  transformOptions: transformOptionsSchema.optional(),
+  probeEnabled: z.boolean().optional().nullable(),
+  probeFrequency: channelProbeFrequencySchema.optional(),
+});
 export type ChannelSettings = z.infer<typeof channelSettingsSchema>;
 
 // Channel Model Entry
@@ -402,7 +344,7 @@ export const createChannelInputSchema = z
     baseURL: z.url('Please enter a valid URL'),
     name: z.string().min(1, 'Name is required'),
     policies: channelPoliciesSchema.optional(),
-    supportedModels: z.array(z.string()).min(1, 'At least one supported model is required'),
+    supportedModels: z.array(z.string()).min(0, 'At least one supported model is required'),
     autoSyncSupportedModels: z.boolean().optional().default(false),
     autoSyncModelPattern: z.string().optional().default(''),
     manualModels: z.array(z.string()).optional().nullable(),

@@ -13,12 +13,19 @@ import (
 )
 
 // FileConfig holds file-based logging options (lumberjack v2).
+type CleanupConfig struct {
+	Enabled             bool    `conf:"enabled" yaml:"enabled" json:"enabled"`
+	MaxTotalSizeGB      float64 `conf:"max_total_size_gb" yaml:"max_total_size_gb" json:"max_total_size_gb"`
+	CleanupIntervalDays int     `conf:"cleanup_interval_days" yaml:"cleanup_interval_days" json:"cleanup_interval_days"`
+}
+
 type FileConfig struct {
-	Path       string `conf:"path" yaml:"path" json:"path"`
-	MaxSize    int    `conf:"max_size" yaml:"max_size" json:"max_size"`          // megabytes
-	MaxAge     int    `conf:"max_age" yaml:"max_age" json:"max_age"`             // days
-	MaxBackups int    `conf:"max_backups" yaml:"max_backups" json:"max_backups"` // files
-	LocalTime  bool   `conf:"local_time" yaml:"local_time" json:"local_time"`
+	Path       string        `conf:"path" yaml:"path" json:"path"`
+	MaxSize    int           `conf:"max_size" yaml:"max_size" json:"max_size"`          // megabytes
+	MaxAge     int           `conf:"max_age" yaml:"max_age" json:"max_age"`             // days
+	MaxBackups int           `conf:"max_backups" yaml:"max_backups" json:"max_backups"` // files
+	LocalTime  bool          `conf:"local_time" yaml:"local_time" json:"local_time"`
+	Cleanup    CleanupConfig `conf:"cleanup" yaml:"cleanup" json:"cleanup"`
 }
 
 // Config ...

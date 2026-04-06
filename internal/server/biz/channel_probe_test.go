@@ -18,7 +18,7 @@ import (
 	"github.com/looplj/axonhub/internal/objects"
 )
 
-func TestResolveChannelProbePlan(t *testing.T) {
+func TestResolveChannelProbeFrequency(t *testing.T) {
 	t.Run("uses system fallback when channel setting is empty", func(t *testing.T) {
 		got := resolveChannelProbePlan(nil, ProbeFrequency5Min)
 		assert.True(t, got.enabled)
@@ -26,29 +26,7 @@ func TestResolveChannelProbePlan(t *testing.T) {
 		assert.Equal(t, 5*time.Minute, got.fixedInterval)
 	})
 
-	t.Run("uses fixed channel override when configured", func(t *testing.T) {
-		got := resolveChannelProbePlan(&objects.ChannelSettings{
-			ProbeIntervalMode:         objects.ChannelProbeIntervalModeFixed,
-			ProbeFixedIntervalSeconds: 7200,
-		}, ProbeFrequency1Min)
-		assert.True(t, got.enabled)
-		assert.Equal(t, objects.ChannelProbeIntervalModeFixed, got.mode)
-		assert.Equal(t, 2*time.Hour, got.fixedInterval)
-	})
-
-	t.Run("uses random channel override when configured", func(t *testing.T) {
-		got := resolveChannelProbePlan(&objects.ChannelSettings{
-			ProbeIntervalMode:             objects.ChannelProbeIntervalModeRandom,
-			ProbeRandomMinIntervalSeconds: 300,
-			ProbeRandomMaxIntervalSeconds: 900,
-		}, ProbeFrequency1Min)
-		assert.True(t, got.enabled)
-		assert.Equal(t, objects.ChannelProbeIntervalModeRandom, got.mode)
-		assert.Equal(t, 5*time.Minute, got.randomMin)
-		assert.Equal(t, 15*time.Minute, got.randomMax)
-	})
-
-	t.Run("falls back to legacy frequency when new fields are unset", func(t *testing.T) {
+	t.Run("uses legacy channel override when valid", func(t *testing.T) {
 		got := resolveChannelProbePlan(&objects.ChannelSettings{
 			ProbeFrequency: objects.ChannelProbeFrequency30Min,
 		}, ProbeFrequency1Min)
@@ -57,12 +35,69 @@ func TestResolveChannelProbePlan(t *testing.T) {
 		assert.Equal(t, 30*time.Minute, got.fixedInterval)
 	})
 
-	t.Run("respects per channel disable", func(t *testing.T) {
+	t.Run("prefers explicit fixed interval over fallback", func(t *testing.T) {
+		got := resolveChannelProbePlan(&objects.ChannelSettings{
+			ProbeIntervalMode:         objects.ChannelProbeIntervalModeFixed,
+			ProbeFixedIntervalSeconds: 75,
+		}, ProbeFrequency1Hour)
+		assert.True(t, got.enabled)
+		assert.Equal(t, objects.ChannelProbeIntervalModeFixed, got.mode)
+		assert.Equal(t, 75*time.Second, got.fixedInterval)
+	})
+
+	t.Run("uses random interval config when valid", func(t *testing.T) {
+		got := resolveChannelProbePlan(&objects.ChannelSettings{
+			ProbeIntervalMode:             objects.ChannelProbeIntervalModeRandom,
+			ProbeRandomMinIntervalSeconds: 30,
+			ProbeRandomMaxIntervalSeconds: 90,
+		}, ProbeFrequency1Hour)
+		assert.True(t, got.enabled)
+		assert.Equal(t, objects.ChannelProbeIntervalModeRandom, got.mode)
+		assert.Equal(t, 30*time.Second, got.randomMin)
+		assert.Equal(t, 90*time.Second, got.randomMax)
+	})
+
+	t.Run("falls back when channel override is invalid", func(t *testing.T) {
+		got := resolveChannelProbePlan(&objects.ChannelSettings{
+			ProbeFrequency: "2m",
+		}, ProbeFrequency1Hour)
+		assert.True(t, got.enabled)
+		assert.Equal(t, objects.ChannelProbeIntervalModeFixed, got.mode)
+		assert.Equal(t, time.Hour, got.fixedInterval)
+	})
+
+	t.Run("respects explicit disable switch", func(t *testing.T) {
 		got := resolveChannelProbePlan(&objects.ChannelSettings{
 			ProbeEnabled: lo.ToPtr(false),
-		}, ProbeFrequency1Hour)
+		}, ProbeFrequency1Min)
 		assert.False(t, got.enabled)
 	})
+}
+
+func TestShouldRunProbe_PerFrequencyWindows(t *testing.T) {
+	svc := &ChannelProbeService{
+		lastExecutionByChan:  make(map[int]time.Time),
+		randomScheduleByChan: make(map[int]channelRandomSchedule),
+	}
+	channels := []*ent.Channel{{ID: 1}}
+
+	firstNow := time.Date(2026, 4, 4, 12, 6, 30, 0, time.UTC)
+	firstWindows := svc.collectDueChannelProbeWindows(channels, ProbeFrequency5Min, firstNow)
+	require.Len(t, firstWindows, 1)
+	assert.Equal(t, 1, firstWindows[0].channelID)
+	assert.Equal(t, objects.ChannelProbeIntervalModeFixed, firstWindows[0].mode)
+	assert.Equal(t, 5*time.Minute, firstWindows[0].interval)
+
+	secondNow := time.Date(2026, 4, 4, 12, 10, 0, 0, time.UTC)
+	secondWindows := svc.collectDueChannelProbeWindows(channels, ProbeFrequency5Min, secondNow)
+	assert.Empty(t, secondWindows)
+
+	thirdNow := time.Date(2026, 4, 4, 12, 11, 30, 0, time.UTC)
+	thirdWindows := svc.collectDueChannelProbeWindows(channels, ProbeFrequency5Min, thirdNow)
+	require.Len(t, thirdWindows, 1)
+	assert.Equal(t, 5*time.Minute, thirdWindows[0].interval)
+	assert.Equal(t, thirdNow.Add(-5*time.Minute), thirdWindows[0].startTime)
+	assert.Equal(t, thirdNow, thirdWindows[0].endTime)
 }
 
 // TestTPSCalculation_RetryScenario tests that only successful executions are counted

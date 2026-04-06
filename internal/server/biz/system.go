@@ -89,8 +89,49 @@ const (
 // SystemGeneralSettings represents general system configuration settings.
 type SystemGeneralSettings struct {
 	// CurrencyCode is the code used for currency display (e.g., USD, RMB).
-	CurrencyCode string `json:"currency_code"`
-	Timezone     string `json:"timezone"`
+	CurrencyCode string            `json:"currency_code"`
+	Timezone     string            `json:"timezone"`
+	Log          SystemLogSettings `json:"log"`
+}
+
+type SystemLogSettings struct {
+	Cleanup SystemLogCleanupSettings `json:"cleanup"`
+}
+
+type SystemLogCleanupSettings struct {
+	Enabled             bool    `json:"enabled"`
+	MaxTotalSizeGB      float64 `json:"max_total_size_gb"`
+	CleanupIntervalDays int     `json:"cleanup_interval_days"`
+}
+
+func systemLogCleanupSettingsFromConfig(cfg log.CleanupConfig) SystemLogCleanupSettings {
+	return SystemLogCleanupSettings{
+		Enabled:             cfg.Enabled,
+		MaxTotalSizeGB:      cfg.MaxTotalSizeGB,
+		CleanupIntervalDays: cfg.CleanupIntervalDays,
+	}
+}
+
+func (s SystemLogCleanupSettings) Normalize() SystemLogCleanupSettings {
+	if s.MaxTotalSizeGB < 0 {
+		s.MaxTotalSizeGB = 0
+	}
+
+	if s.CleanupIntervalDays < 0 {
+		s.CleanupIntervalDays = 0
+	}
+
+	return s
+}
+
+func (s SystemLogCleanupSettings) ToLogCleanupConfig() log.CleanupConfig {
+	normalized := s.Normalize()
+
+	return log.CleanupConfig{
+		Enabled:             normalized.Enabled,
+		MaxTotalSizeGB:      normalized.MaxTotalSizeGB,
+		CleanupIntervalDays: normalized.CleanupIntervalDays,
+	}
 }
 
 // VideoStorageSettings represents system settings for persisting generated videos.
@@ -316,6 +357,7 @@ type SystemServiceParams struct {
 	fx.In
 
 	CacheConfig xcache.Config
+	LogConfig   log.Config
 	Ent         *ent.Client
 }
 
@@ -326,6 +368,7 @@ func NewSystemService(params SystemServiceParams) *SystemService {
 		},
 		CacheConfig:                   params.CacheConfig,
 		Cache:                         xcache.NewFromConfig[ent.System](params.CacheConfig),
+		LogConfig:                     params.LogConfig,
 		publicBenefitAffinityBindings: make(map[string]publicBenefitAffinityBinding),
 	}
 }
@@ -335,10 +378,37 @@ type SystemService struct {
 
 	CacheConfig xcache.Config
 	Cache       xcache.Cache[ent.System]
+	LogConfig   log.Config
 
 	mu                            sync.RWMutex
 	timeLocation                  *time.Location
 	publicBenefitAffinityBindings map[string]publicBenefitAffinityBinding
+}
+
+func (s *SystemService) defaultSystemGeneralSettings() SystemGeneralSettings {
+	return SystemGeneralSettings{
+		CurrencyCode: defaultGeneralSettings.CurrencyCode,
+		Timezone:     defaultGeneralSettings.Timezone,
+		Log: SystemLogSettings{
+			Cleanup: systemLogCleanupSettingsFromConfig(s.LogConfig.File.Cleanup),
+		},
+	}
+}
+
+func (s *SystemService) normalizeGeneralSettings(settings SystemGeneralSettings) SystemGeneralSettings {
+	defaults := s.defaultSystemGeneralSettings()
+
+	if strings.TrimSpace(settings.CurrencyCode) == "" {
+		settings.CurrencyCode = defaults.CurrencyCode
+	}
+
+	if strings.TrimSpace(settings.Timezone) == "" {
+		settings.Timezone = defaults.Timezone
+	}
+
+	settings.Log.Cleanup = settings.Log.Cleanup.Normalize()
+
+	return settings
 }
 
 func (s *SystemService) IsInitialized(ctx context.Context) (bool, error) {
@@ -833,10 +903,11 @@ func (s *SystemService) TimeLocation(ctx context.Context) *time.Location {
 
 // GeneralSettings retrieves the general settings configuration.
 func (s *SystemService) GeneralSettings(ctx context.Context) (*SystemGeneralSettings, error) {
+	defaults := s.defaultSystemGeneralSettings()
 	value, err := s.getSystemValue(ctx, SystemKeyGeneralSettings)
 	if err != nil {
 		if ent.IsNotFound(err) {
-			return lo.ToPtr(defaultGeneralSettings), nil
+			return lo.ToPtr(defaults), nil
 		}
 
 		return nil, fmt.Errorf("failed to get general settings: %w", err)
@@ -848,18 +919,39 @@ func (s *SystemService) GeneralSettings(ctx context.Context) (*SystemGeneralSett
 	}
 
 	if settings.CurrencyCode == "" {
-		settings.CurrencyCode = defaultGeneralSettings.CurrencyCode
+		settings.CurrencyCode = defaults.CurrencyCode
 	}
 
 	if settings.Timezone == "" {
-		settings.Timezone = defaultGeneralSettings.Timezone
+		settings.Timezone = defaults.Timezone
 	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(value), &raw); err == nil {
+		rawLog, hasLog := raw["log"]
+		if !hasLog {
+			settings.Log = defaults.Log
+		} else {
+			var rawLogMap map[string]json.RawMessage
+			if err := json.Unmarshal(rawLog, &rawLogMap); err != nil {
+				settings.Log = defaults.Log
+			} else if _, hasCleanup := rawLogMap["cleanup"]; !hasCleanup {
+				settings.Log.Cleanup = defaults.Log.Cleanup
+			}
+		}
+	} else {
+		settings.Log = defaults.Log
+	}
+
+	settings = s.normalizeGeneralSettings(settings)
 
 	return &settings, nil
 }
 
 // SetGeneralSettings sets the general settings configuration.
 func (s *SystemService) SetGeneralSettings(ctx context.Context, settings SystemGeneralSettings) error {
+	settings = s.normalizeGeneralSettings(settings)
+
 	jsonBytes, err := json.Marshal(settings)
 	if err != nil {
 		return fmt.Errorf("failed to marshal general settings: %w", err)

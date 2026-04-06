@@ -86,8 +86,8 @@ func (s *PublicBenefitUpstreamSelector) Select(ctx context.Context, req *llm.Req
 		degraded = append(degraded, cloned)
 	}
 
-	sortCandidatesByPolicyWeight(preferred, policyByBaseURL)
-	sortCandidatesByPolicyWeight(degraded, policyByBaseURL)
+	sortCandidatesByPolicy(preferred, policyByBaseURL)
+	sortCandidatesByPolicy(degraded, policyByBaseURL)
 
 	result := append(preferred, degraded...)
 	result = append(result, unmatched...)
@@ -110,6 +110,7 @@ func (s *PublicBenefitUpstreamSelector) Select(ctx context.Context, req *llm.Req
 			log.Int("preferred_count", len(preferred)),
 			log.Int("degraded_count", len(degraded)),
 			log.Int("unmatched_count", len(unmatched)),
+			log.Bool("health_priority_enabled", true),
 		)
 	}
 
@@ -148,30 +149,35 @@ func filterCandidateModelsByPolicy(models []biz.ChannelModelEntry, policy biz.Pu
 	return result
 }
 
-func sortCandidatesByPolicyWeight(candidates []*ChannelModelsCandidate, policyByBaseURL map[string]biz.PublicBenefitUpstreamPolicy) {
+func sortCandidatesByPolicy(candidates []*ChannelModelsCandidate, policyByBaseURL map[string]biz.PublicBenefitUpstreamPolicy) {
 	slices.SortStableFunc(candidates, func(a, b *ChannelModelsCandidate) int {
-		aw := 0
-		bw := 0
-		if a != nil && a.Channel != nil {
-			if policy, ok := policyByBaseURL[normalizePublicBenefitBaseURL(a.Channel.BaseURL)]; ok {
-				aw = policy.Weight
-			}
-		}
-		if b != nil && b.Channel != nil {
-			if policy, ok := policyByBaseURL[normalizePublicBenefitBaseURL(b.Channel.BaseURL)]; ok {
-				bw = policy.Weight
-			}
-		}
+		ap := policyForCandidate(a, policyByBaseURL)
+		bp := policyForCandidate(b, policyByBaseURL)
 
 		switch {
-		case aw > bw:
+		case ap.RecentProbeRequestCount > 0 && bp.RecentProbeRequestCount == 0:
 			return -1
-		case aw < bw:
+		case ap.RecentProbeRequestCount == 0 && bp.RecentProbeRequestCount > 0:
+			return 1
+		case ap.RecentProbeSuccessRate > bp.RecentProbeSuccessRate:
+			return -1
+		case ap.RecentProbeSuccessRate < bp.RecentProbeSuccessRate:
+			return 1
+		case ap.Weight > bp.Weight:
+			return -1
+		case ap.Weight < bp.Weight:
 			return 1
 		default:
 			return 0
 		}
 	})
+}
+
+func policyForCandidate(candidate *ChannelModelsCandidate, policyByBaseURL map[string]biz.PublicBenefitUpstreamPolicy) biz.PublicBenefitUpstreamPolicy {
+	if candidate == nil || candidate.Channel == nil {
+		return biz.PublicBenefitUpstreamPolicy{}
+	}
+	return policyByBaseURL[normalizePublicBenefitBaseURL(candidate.Channel.BaseURL)]
 }
 
 func normalizePublicBenefitBaseURL(baseURL string) string {

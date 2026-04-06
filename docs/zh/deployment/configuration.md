@@ -164,6 +164,10 @@ log:
     max_age: 30                 # 保留的最大天数
     max_backups: 10             # 旧日志文件的最大数量
     local_time: true            # 轮转文件使用本地时间
+    cleanup:
+      enabled: false            # 启用日志目录自动清理
+      max_total_size_gb: 1      # 日志总占用超过该值时，优先删除最老归档日志
+      cleanup_interval_days: 7  # 每隔 N 天清理一次归档日志，0 表示关闭
 ```
 
 **环境变量：**
@@ -183,6 +187,9 @@ log:
 - `AXONHUB_LOG_FILE_MAX_SIZE`
 - `AXONHUB_LOG_FILE_MAX_AGE`
 - `AXONHUB_LOG_FILE_MAX_BACKUPS`
+- `AXONHUB_LOG_FILE_CLEANUP_ENABLED`
+- `AXONHUB_LOG_FILE_CLEANUP_MAX_TOTAL_SIZE_GB`
+- `AXONHUB_LOG_FILE_CLEANUP_CLEANUP_INTERVAL_DAYS`
 - `AXONHUB_LOG_FILE_LOCAL_TIME`
 
 ### 指标配置

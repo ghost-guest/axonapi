@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -59,7 +60,7 @@ func (svc *PublicBenefitRuntimeService) Start(ctx context.Context) error {
 		if err := svc.RunSync(runCtx); err != nil {
 			log.Warn(runCtx, "public benefit runtime sync failed", log.Cause(err))
 		}
-	}, executors.CRONRule{Expr: "*/10 * * * *"})
+	}, executors.CRONRule{Expr: "* * * * *"})
 
 	return err
 }
@@ -235,9 +236,223 @@ func (svc *PublicBenefitRuntimeService) syncUpstreamRuntime(
 
 	runtime.AvailableModels = lo.Map(modelResult.Models, func(item ModelIdentify, _ int) string { return item.ID })
 	runtime.LastModelSyncAt = lo.ToPtr(now)
+
+	healthStatus, healthErr := svc.probeUpstreamHealth(ctx, upstream, runtime.AvailableModels)
 	runtime.LastHealthCheckAt = lo.ToPtr(now)
+	if healthErr != nil {
+		runtime.HealthStatus = healthStatus
+		runtime.LastError = healthErr.Error()
+		log.Warn(ctx, "public benefit upstream real probe failed",
+			log.String("upstream_id", upstream.ID),
+			log.String("base_url", upstream.BaseURL),
+			log.String("health_status", healthStatus),
+			log.Cause(healthErr),
+		)
+		return runtime
+	}
+
+	runtime.HealthStatus = healthStatus
+	runtime.LastError = ""
+	log.Debug(ctx, "public benefit upstream real probe succeeded",
+		log.String("upstream_id", upstream.ID),
+		log.String("base_url", upstream.BaseURL),
+		log.String("health_status", healthStatus),
+	)
 
 	return runtime
+}
+
+func (svc *PublicBenefitRuntimeService) probeUpstreamHealth(
+	ctx context.Context,
+	upstream objects.PublicBenefitUpstreamSite,
+	availableModels []string,
+) (string, error) {
+	probeType, modelID, request := buildPublicBenefitProbeRequest(upstream, availableModels)
+	if request == nil {
+		return "degraded", fmt.Errorf("no compatible health probe request for upstream %s", upstream.ID)
+	}
+
+	log.Debug(ctx, "probing public benefit upstream with real request",
+		log.String("upstream_id", upstream.ID),
+		log.String("probe_type", probeType),
+		log.String("probe_model", modelID),
+		log.String("url", request.URL),
+	)
+
+	_, err := svc.httpClient.Do(ctx, request)
+	if err != nil {
+		return "error", fmt.Errorf("%s probe failed for model %s: %w", probeType, modelID, err)
+	}
+
+	return "healthy", nil
+}
+
+func buildPublicBenefitProbeRequest(
+	upstream objects.PublicBenefitUpstreamSite,
+	availableModels []string,
+) (string, string, *httpclient.Request) {
+	baseURL := strings.TrimRight(strings.TrimSpace(upstream.BaseURL), "/")
+	if baseURL == "" {
+		return "", "", nil
+	}
+
+	preferredModel := strings.TrimSpace(upstream.HealthCheckModel)
+	if preferredModel == "" {
+		preferredModel = selectPublicBenefitProbeModel(upstream, availableModels)
+	}
+	if preferredModel == "" {
+		return "", "", nil
+	}
+
+	probeType, path, body := buildPublicBenefitProbePayload(upstream, preferredModel)
+	if probeType == "" || path == "" {
+		return "", "", nil
+	}
+
+	return probeType, preferredModel, httpclient.NewRequestBuilder().
+		WithMethod(http.MethodPost).
+		WithURL(joinPublicBenefitProbeURL(baseURL, path)).
+		WithHeader("Authorization", "Bearer "+upstream.APIKey).
+		WithHeader("Content-Type", "application/json").
+		WithBody(body).
+		Build()
+}
+
+func buildPublicBenefitProbePayload(
+	upstream objects.PublicBenefitUpstreamSite,
+	modelID string,
+) (string, string, any) {
+	path := strings.TrimSpace(upstream.HealthCheckPath)
+	if path != "" {
+		switch normalizePublicBenefitProbePath(path) {
+		case "/v1/messages":
+			return "anthropic_messages", path, publicBenefitAnthropicProbeBody(modelID)
+		case "/responses", "/v1/responses":
+			return "openai_responses", path, publicBenefitResponsesProbeBody(modelID)
+		case "/chat/completions", "/v1/chat/completions":
+			return "openai_chat", path, publicBenefitChatProbeBody(modelID)
+		default:
+			return "", "", nil
+		}
+	}
+
+	if upstream.SupportsClaude || strings.Contains(strings.ToLower(modelID), "claude") {
+		return "anthropic_messages", "/v1/messages", publicBenefitAnthropicProbeBody(modelID)
+	}
+	if upstream.SupportsCodex {
+		return "openai_responses", "/responses", publicBenefitResponsesProbeBody(modelID)
+	}
+	if upstream.SupportsOpenCode {
+		return "openai_chat", "/chat/completions", publicBenefitChatProbeBody(modelID)
+	}
+
+	return "openai_responses", "/responses", publicBenefitResponsesProbeBody(modelID)
+}
+
+func normalizePublicBenefitProbePath(path string) string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return ""
+	}
+	if !strings.HasPrefix(trimmed, "/") {
+		trimmed = "/" + trimmed
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return strings.TrimRight(trimmed, "/")
+	}
+	normalized := strings.TrimRight(parsed.Path, "/")
+	if normalized == "" {
+		return "/"
+	}
+	return normalized
+}
+
+func joinPublicBenefitProbeURL(baseURL string, path string) string {
+	return strings.TrimRight(baseURL, "/") + "/" + strings.TrimLeft(strings.TrimSpace(path), "/")
+}
+
+func selectPublicBenefitProbeModel(upstream objects.PublicBenefitUpstreamSite, availableModels []string) string {
+	for _, modelID := range availableModels {
+		trimmed := strings.TrimSpace(modelID)
+		if trimmed == "" {
+			continue
+		}
+		lower := strings.ToLower(trimmed)
+		if upstream.SupportsClaude && strings.Contains(lower, "claude") {
+			return trimmed
+		}
+	}
+	for _, modelID := range availableModels {
+		trimmed := strings.TrimSpace(modelID)
+		if trimmed == "" {
+			continue
+		}
+		lower := strings.ToLower(trimmed)
+		if upstream.SupportsCodex && strings.Contains(lower, "codex") {
+			return trimmed
+		}
+	}
+	for _, modelID := range availableModels {
+		trimmed := strings.TrimSpace(modelID)
+		if trimmed == "" {
+			continue
+		}
+		if upstream.SupportsOpenCode {
+			return trimmed
+		}
+	}
+	for _, modelID := range availableModels {
+		trimmed := strings.TrimSpace(modelID)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func publicBenefitAnthropicProbeBody(modelID string) map[string]any {
+	return map[string]any{
+		"model":      modelID,
+		"max_tokens": 5,
+		"messages": []map[string]any{
+			{
+				"role":    "user",
+				"content": "Reply with OK only.",
+			},
+		},
+	}
+}
+
+func publicBenefitResponsesProbeBody(modelID string) map[string]any {
+	return map[string]any{
+		"model": modelID,
+		"input": []map[string]any{
+			{
+				"role": "user",
+				"content": []map[string]any{
+					{
+						"type": "input_text",
+						"text": "Reply with OK only.",
+					},
+				},
+			},
+		},
+		"max_output_tokens": 5,
+	}
+}
+
+func publicBenefitChatProbeBody(modelID string) map[string]any {
+	return map[string]any{
+		"model": modelID,
+		"messages": []map[string]any{
+			{
+				"role":    "user",
+				"content": "Reply with OK only.",
+			},
+		},
+		"max_tokens": 5,
+	}
 }
 
 func (svc *PublicBenefitRuntimeService) upsertChannelForUpstream(

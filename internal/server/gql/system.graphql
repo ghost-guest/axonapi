@@ -173,11 +173,33 @@ input UpdateSystemChannelSettingsInput {
 type SystemGeneralSettings {
   currencyCode: String!
   timezone: String!
+  log: SystemLogSettings!
 }
 
 input UpdateSystemGeneralSettingsInput {
   currencyCode: String
   timezone: String
+  log: UpdateSystemLogSettingsInput
+}
+
+type SystemLogSettings {
+  cleanup: SystemLogCleanupSettings!
+}
+
+type SystemLogCleanupSettings {
+  enabled: Boolean!
+  maxTotalSizeGB: Float!
+  cleanupIntervalDays: Int!
+}
+
+input UpdateSystemLogSettingsInput {
+  cleanup: UpdateSystemLogCleanupSettingsInput
+}
+
+input UpdateSystemLogCleanupSettingsInput {
+  enabled: Boolean
+  maxTotalSizeGB: Float
+  cleanupIntervalDays: Int
 }
 
 type VideoStorageSettings {

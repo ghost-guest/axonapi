@@ -12,6 +12,7 @@ import (
 	"github.com/looplj/axonhub/internal/authz"
 	"github.com/looplj/axonhub/internal/ent"
 	"github.com/looplj/axonhub/internal/ent/enttest"
+	"github.com/looplj/axonhub/internal/log"
 	"github.com/looplj/axonhub/internal/objects"
 	"github.com/looplj/axonhub/internal/pkg/xcache"
 	"github.com/looplj/axonhub/internal/pkg/xredis"
@@ -242,6 +243,67 @@ func TestSystemService_StoragePolicy(t *testing.T) {
 	storeChunks, err := service.StoreChunks(ctx)
 	require.NoError(t, err)
 	require.True(t, storeChunks)
+}
+
+func TestSystemService_GeneralSettings_DefaultLogCleanupFromConfig(t *testing.T) {
+	cacheConfig := xcache.Config{Mode: xcache.ModeMemory}
+
+	service, client := setupTestSystemService(t, cacheConfig)
+	defer client.Close()
+
+	service.LogConfig = log.Config{
+		File: log.FileConfig{
+			Cleanup: log.CleanupConfig{
+				Enabled:             true,
+				MaxTotalSizeGB:      1.5,
+				CleanupIntervalDays: 7,
+			},
+		},
+	}
+
+	ctx := context.Background()
+	ctx = ent.NewContext(ctx, client)
+	ctx = authz.WithTestBypass(ctx)
+
+	settings, err := service.GeneralSettings(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "USD", settings.CurrencyCode)
+	require.Equal(t, "UTC", settings.Timezone)
+	require.True(t, settings.Log.Cleanup.Enabled)
+	require.Equal(t, 1.5, settings.Log.Cleanup.MaxTotalSizeGB)
+	require.Equal(t, 7, settings.Log.Cleanup.CleanupIntervalDays)
+}
+
+func TestSystemService_GeneralSettings_BackwardCompatibleWithoutLogField(t *testing.T) {
+	cacheConfig := xcache.Config{Mode: xcache.ModeMemory}
+
+	service, client := setupTestSystemService(t, cacheConfig)
+	defer client.Close()
+
+	service.LogConfig = log.Config{
+		File: log.FileConfig{
+			Cleanup: log.CleanupConfig{
+				Enabled:             true,
+				MaxTotalSizeGB:      2,
+				CleanupIntervalDays: 14,
+			},
+		},
+	}
+
+	ctx := context.Background()
+	ctx = ent.NewContext(ctx, client)
+	ctx = authz.WithTestBypass(ctx)
+
+	err := service.setSystemValue(ctx, SystemKeyGeneralSettings, `{"currency_code":"EUR","timezone":"Asia/Shanghai"}`)
+	require.NoError(t, err)
+
+	settings, err := service.GeneralSettings(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "EUR", settings.CurrencyCode)
+	require.Equal(t, "Asia/Shanghai", settings.Timezone)
+	require.True(t, settings.Log.Cleanup.Enabled)
+	require.Equal(t, 2.0, settings.Log.Cleanup.MaxTotalSizeGB)
+	require.Equal(t, 14, settings.Log.Cleanup.CleanupIntervalDays)
 }
 
 func TestSystemService_Initialize_WithCache(t *testing.T) {

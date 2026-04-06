@@ -33,15 +33,16 @@ func (s *stubCandidateSelector) Select(_ context.Context, req *llm.Request) ([]*
 	return s.byModel[req.Model], nil
 }
 
-func TestPublicBenefitFallbackSelector_Select_MergesModelsByChannel(t *testing.T) {
-	channel := &biz.Channel{Channel: &ent.Channel{ID: 1, Name: "test-channel"}}
+func TestPublicBenefitFallbackSelector_Select_AppendsFallbackCandidatesAfterDirectCandidates(t *testing.T) {
+	directChannel := &biz.Channel{Channel: &ent.Channel{ID: 1, Name: "claude-channel"}}
+	fallbackChannel := &biz.Channel{Channel: &ent.Channel{ID: 2, Name: "gpt-channel"}}
 
 	selector := WithPublicBenefitFallbackSelector(
 		&stubCandidateSelector{
 			byModel: map[string][]*ChannelModelsCandidate{
 				"claude-sonnet": {
 					{
-						Channel:  channel,
+						Channel:  directChannel,
 						Priority: 0,
 						Models: []biz.ChannelModelEntry{
 							{RequestModel: "claude-sonnet", ActualModel: "claude-sonnet", Source: "direct"},
@@ -50,7 +51,7 @@ func TestPublicBenefitFallbackSelector_Select_MergesModelsByChannel(t *testing.T
 				},
 				"gpt-5.4": {
 					{
-						Channel:  channel,
+						Channel:  fallbackChannel,
 						Priority: 0,
 						Models: []biz.ChannelModelEntry{
 							{RequestModel: "gpt-5.4", ActualModel: "gpt-5.4", Source: "fallback"},
@@ -66,10 +67,13 @@ func TestPublicBenefitFallbackSelector_Select_MergesModelsByChannel(t *testing.T
 
 	result, err := selector.Select(context.Background(), &llm.Request{Model: "claude-sonnet"})
 	require.NoError(t, err)
-	require.Len(t, result, 1)
-	require.Len(t, result[0].Models, 2)
+	require.Len(t, result, 2)
+	require.Equal(t, "claude-channel", result[0].Channel.Name)
+	require.Len(t, result[0].Models, 1)
 	require.Equal(t, "claude-sonnet", result[0].Models[0].ActualModel)
-	require.Equal(t, "gpt-5.4", result[0].Models[1].ActualModel)
+	require.Equal(t, "gpt-channel", result[1].Channel.Name)
+	require.Len(t, result[1].Models, 1)
+	require.Equal(t, "gpt-5.4", result[1].Models[0].ActualModel)
 }
 
 func TestPublicBenefitFallbackSelector_Select_SkipsInvalidFallbackModel(t *testing.T) {
@@ -99,5 +103,47 @@ func TestPublicBenefitFallbackSelector_Select_SkipsInvalidFallbackModel(t *testi
 	result, err := selector.Select(context.Background(), &llm.Request{Model: "claude-opus"})
 	require.NoError(t, err)
 	require.Len(t, result, 1)
+	require.Equal(t, "gpt-5.4", result[0].Models[0].ActualModel)
+}
+
+func TestPublicBenefitFallbackSelector_Select_ReplacesDirectCandidatesOnceFallbackModelSucceeds(t *testing.T) {
+	claudeChannel := &biz.Channel{Channel: &ent.Channel{ID: 2, Name: "claude-only"}}
+	gptChannel := &biz.Channel{Channel: &ent.Channel{ID: 3, Name: "gpt-fallback"}}
+
+	selector := WithPublicBenefitFallbackSelector(
+		&stubCandidateSelector{
+			byModel: map[string][]*ChannelModelsCandidate{
+				"claude-opus": {
+					{
+						Channel:  claudeChannel,
+						Priority: 0,
+						Models: []biz.ChannelModelEntry{
+							{RequestModel: "claude-opus", ActualModel: "claude-sonnet-4-6", Source: "direct"},
+						},
+					},
+				},
+				"gpt-5.4": {
+					{
+						Channel:  gptChannel,
+						Priority: 0,
+						Models: []biz.ChannelModelEntry{
+							{RequestModel: "gpt-5.4", ActualModel: "gpt-5.4", Source: "fallback"},
+						},
+					},
+				},
+			},
+			errs: map[string]error{
+				"claude-opus": errors.New("provider unavailable"),
+			},
+		},
+		&stubPublicBenefitResolver{sequence: []string{"claude-opus", "gpt-5.4"}},
+		llm.APIFormatAnthropicMessage,
+	)
+
+	result, err := selector.Select(context.Background(), &llm.Request{Model: "claude-opus"})
+	require.NoError(t, err)
+	require.Len(t, result, 1)
+	require.Equal(t, "gpt-fallback", result[0].Channel.Name)
+	require.Len(t, result[0].Models, 1)
 	require.Equal(t, "gpt-5.4", result[0].Models[0].ActualModel)
 }

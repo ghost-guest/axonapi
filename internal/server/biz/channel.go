@@ -185,17 +185,6 @@ func validateChannelProbeFrequency(frequency objects.ChannelProbeFrequency) erro
 	}
 }
 
-func validateChannelProbeIntervalMode(mode objects.ChannelProbeIntervalMode) error {
-	switch mode {
-	case "",
-		objects.ChannelProbeIntervalModeFixed,
-		objects.ChannelProbeIntervalModeRandom:
-		return nil
-	default:
-		return fmt.Errorf("invalid probe interval mode %q, allowed values are fixed, random", mode)
-	}
-}
-
 func validateChannelSettings(settings *objects.ChannelSettings) error {
 	if settings == nil {
 		return nil
@@ -215,27 +204,6 @@ func validateChannelSettings(settings *objects.ChannelSettings) error {
 
 	if err := validateChannelProbeFrequency(settings.ProbeFrequency); err != nil {
 		return err
-	}
-
-	if err := validateChannelProbeIntervalMode(settings.ProbeIntervalMode); err != nil {
-		return err
-	}
-
-	switch settings.ProbeIntervalMode {
-	case objects.ChannelProbeIntervalModeFixed:
-		if settings.ProbeFixedIntervalSeconds <= 0 {
-			return fmt.Errorf("probe fixed interval seconds must be greater than 0 when probe interval mode is fixed")
-		}
-	case objects.ChannelProbeIntervalModeRandom:
-		if settings.ProbeRandomMinIntervalSeconds <= 0 {
-			return fmt.Errorf("probe random minimum interval seconds must be greater than 0 when probe interval mode is random")
-		}
-		if settings.ProbeRandomMaxIntervalSeconds <= 0 {
-			return fmt.Errorf("probe random maximum interval seconds must be greater than 0 when probe interval mode is random")
-		}
-		if settings.ProbeRandomMaxIntervalSeconds < settings.ProbeRandomMinIntervalSeconds {
-			return fmt.Errorf("probe random maximum interval seconds must be greater than or equal to minimum interval seconds")
-		}
 	}
 
 	return nil
