@@ -32,15 +32,16 @@ type PlaygroundResponseError struct {
 type PlaygroundHandlersParams struct {
 	fx.In
 
-	ChannelService  *biz.ChannelService
-	ModelService    *biz.ModelService
-	RequestService  *biz.RequestService
-	SystemService   *biz.SystemService
-	UsageLogService *biz.UsageLogService
-	PromptService   *biz.PromptService
+	ChannelService              *biz.ChannelService
+	ModelService                *biz.ModelService
+	RequestService              *biz.RequestService
+	SystemService               *biz.SystemService
+	UsageLogService             *biz.UsageLogService
+	PromptService               *biz.PromptService
 	PromptProtectionRuleService *biz.PromptProtectionRuleService
-	QuotaService    *biz.QuotaService
-	HttpClient      *httpclient.HttpClient
+	QuotaService                *biz.QuotaService
+	HttpClient                  *httpclient.HttpClient
+	ModelCircuitBreaker         *biz.ModelCircuitBreaker
 }
 
 type PlaygroundHandlers struct {
@@ -62,6 +63,7 @@ func NewPlaygroundHandlers(params PlaygroundHandlersParams) *PlaygroundHandlers 
 			params.PromptService,
 			params.QuotaService,
 			params.PromptProtectionRuleService,
+			params.ModelCircuitBreaker,
 		),
 	}
 }
@@ -277,6 +279,7 @@ func (handlers *PlaygroundHandlers) ChatCompletion(c *gin.Context) {
 
 	if result.ChatCompletion != nil {
 		resp := result.ChatCompletion
+		writeModelSelectionHeaders(c, result)
 
 		contentType := "application/json"
 		if ct := resp.Headers.Get("Content-Type"); ct != "" {
@@ -298,6 +301,7 @@ func (handlers *PlaygroundHandlers) ChatCompletion(c *gin.Context) {
 
 		// Set AI SDK data stream headers
 
+		writeModelSelectionHeaders(c, result)
 		c.Header("Content-Type", "text/event-stream")
 		c.Header("Cache-Control", "no-cache")
 		c.Header("Connection", "keep-alive")

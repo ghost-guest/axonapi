@@ -10,6 +10,7 @@ import (
 	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 
 	"github.com/looplj/axonhub/internal/authz"
 	"github.com/looplj/axonhub/internal/contexts"
@@ -233,6 +234,77 @@ func TestChatCompletionOrchestrator_Process_WithModelMapping(t *testing.T) {
 	// The stored model should be the mapped model (gpt-4) since that's what was actually used
 	dbRequest := requests[0]
 	assert.Equal(t, "gpt-4", dbRequest.ModelID)
+}
+
+func TestChatCompletionOrchestrator_Process_ReturnsActualModelMetadata(t *testing.T) {
+	ctx := context.Background()
+	ctx = authz.WithTestBypass(ctx)
+
+	client := enttest.NewEntClient(t, "sqlite3", "file:ent?mode=memory&_fk=0")
+	defer client.Close()
+
+	ctx = ent.NewContext(ctx, client)
+
+	project := createTestProject(t, ctx, client)
+	ch := createTestChannel(t, ctx, client)
+	channelService, requestService, systemService, usageLogService := setupTestServices(t, client)
+
+	mockResp := buildMockOpenAIResponse("chatcmpl-fallback", "gpt-5.4", "Fallback response", 10, 20)
+	executor := &mockExecutor{
+		response: &httpclient.Response{
+			StatusCode: 200,
+			Body:       mockResp,
+			Headers:    http.Header{"Content-Type": []string{"application/json"}},
+		},
+	}
+
+	outbound, err := openai.NewOutboundTransformer(ch.BaseURL, ch.Credentials.APIKey)
+	require.NoError(t, err)
+
+	bizChannel := &biz.Channel{
+		Channel:  ch,
+		Outbound: outbound,
+	}
+
+	channelSelector := &staticChannelSelector{
+		candidates: []*ChannelModelsCandidate{
+			{
+				Channel:  bizChannel,
+				Priority: 0,
+				Models: []biz.ChannelModelEntry{
+					{RequestModel: "claude-sonnet-4", ActualModel: "gpt-5.4"},
+				},
+			},
+		},
+	}
+
+	orchestrator := &ChatCompletionOrchestrator{
+		channelSelector:   channelSelector,
+		Inbound:           openai.NewInboundTransformer(),
+		RequestService:    requestService,
+		ChannelService:    channelService,
+		PromptProvider:    &stubPromptProvider{},
+		SystemService:     systemService,
+		UsageLogService:   usageLogService,
+		PipelineFactory:   pipeline.NewFactory(executor),
+		ModelMapper:       NewModelMapper(),
+		connectionTracker: NewDefaultConnectionTracker(1024),
+		Middlewares: []pipeline.Middleware{
+			stream.EnsureUsage(),
+		},
+	}
+
+	httpRequest := buildTestRequest("claude-sonnet-4", "Fallback test", false)
+	ctx = contexts.WithProjectID(ctx, project.ID)
+
+	result, err := orchestrator.Process(ctx, httpRequest)
+
+	require.NoError(t, err)
+	require.NotNil(t, result.ChatCompletion)
+	assert.Equal(t, "claude-sonnet-4", result.RequestedModel)
+	assert.Equal(t, "gpt-5.4", result.ActualModel)
+	assert.True(t, result.FallbackUsed)
+	assert.Equal(t, "gpt-5.4", gjson.GetBytes(result.ChatCompletion.Body, "model").String())
 }
 
 // TestChatCompletionOrchestrator_Process_WithOverrideParameters tests channel override parameters.
@@ -469,7 +541,6 @@ func TestChatCompletionOrchestrator_Process_SameChannelRetryNextModel(t *testing
 	})
 	require.NoError(t, err)
 
-	mockResp := buildMockOpenAIResponse("chatcmpl-retry-1", "gpt-3.5-turbo", "Recovered", 10, 20)
 	executor := &sequenceExecutor{
 		steps: []executorStep{
 			{
@@ -479,10 +550,9 @@ func TestChatCompletionOrchestrator_Process_SameChannelRetryNextModel(t *testing
 				},
 			},
 			{
-				resp: &httpclient.Response{
-					StatusCode: 200,
-					Body:       mockResp,
-					Headers:    http.Header{"Content-Type": []string{"application/json"}},
+				err: &httpclient.Error{
+					StatusCode: 500,
+					Body:       []byte(`{"error":{"message":"fallback upstream error","type":"api_error"}}`),
 				},
 			},
 		},
@@ -529,21 +599,22 @@ func TestChatCompletionOrchestrator_Process_SameChannelRetryNextModel(t *testing
 	ctx = contexts.WithProjectID(ctx, project.ID)
 
 	result, err := orchestrator.Process(ctx, httpRequest)
-	require.NoError(t, err)
-	require.NotNil(t, result.ChatCompletion)
+	require.Error(t, err)
+	require.NotNil(t, result)
+	require.Nil(t, result.ChatCompletion)
+	require.Nil(t, result.ChatCompletionStream)
+	require.Contains(t, err.Error(), "fallback upstream error")
 	require.Len(t, executor.requests, 2)
 
 	var firstBody map[string]any
-
 	err = json.Unmarshal(executor.requests[0].Body, &firstBody)
 	require.NoError(t, err)
 	assert.Equal(t, "gpt-4", firstBody["model"])
 
 	var secondBody map[string]any
-
 	err = json.Unmarshal(executor.requests[1].Body, &secondBody)
 	require.NoError(t, err)
-	assert.Equal(t, "gpt-3.5-turbo", secondBody["model"])
+	assert.Equal(t, "gpt-4", secondBody["model"])
 
 	requests, err := client.Request.Query().All(ctx)
 	require.NoError(t, err)

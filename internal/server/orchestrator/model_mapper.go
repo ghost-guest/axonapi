@@ -41,6 +41,9 @@ func (m *apiKeyModelMappingMiddleware) OnInboundLlmRequest(ctx context.Context, 
 	// Save the original client request model before any mapping
 	if m.RequestModel == "" {
 		m.RequestModel = llmRequest.Model
+		if m.inbound.state.ClientRequestModel == "" {
+			m.inbound.state.ClientRequestModel = llmRequest.Model
+		}
 	}
 
 	// Apply model mapping from API key profiles if active profile exists
@@ -163,11 +166,10 @@ func (m *ModelMapper) matchesMapping(pattern, model string) bool {
 	return xregexp.MatchString(pattern, model)
 }
 
-// ReplaceResponseModel replaces the model field in llm.Response with the original client request model.
+// ReplaceResponseModel keeps the actual provider model when present and only backfills
+// an empty model field for compatibility.
 func (m *ModelMapper) ReplaceResponseModel(response *llm.Response, requestModel string) {
-	// If the response model is empty, it means the model field was not sent from the LLM service.
-	// In this case, we should not replace the model.
-	if response != nil && response.Model != "" && response.Model != requestModel {
+	if response != nil && response.Model == "" && requestModel != "" {
 		response.Model = requestModel
 	}
 }

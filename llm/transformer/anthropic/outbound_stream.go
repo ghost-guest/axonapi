@@ -168,6 +168,10 @@ func (s *outboundStream) transformStreamChunk(event *httpclient.StreamEvent) (*l
 	case "content_block_start":
 		// Only process tool_use content blocks, skip text content blocks
 		if streamEvent.ContentBlock != nil && streamEvent.ContentBlock.Type == "tool_use" {
+			if streamEvent.ContentBlock.Name == nil {
+				return nil, fmt.Errorf("tool_use content block missing name")
+			}
+
 			// Initialize a new tool call
 			state.toolIndex++
 			toolCall := llm.ToolCall{
@@ -196,6 +200,10 @@ func (s *outboundStream) transformStreamChunk(event *httpclient.StreamEvent) (*l
 
 	case "content_block_delta":
 		if streamEvent.Delta != nil {
+			if streamEvent.Delta.Type == nil {
+				return nil, fmt.Errorf("content block delta type is nil")
+			}
+
 			choice := llm.Choice{
 				Index: 0,
 				Delta: &llm.Message{
@@ -206,6 +214,11 @@ func (s *outboundStream) transformStreamChunk(event *httpclient.StreamEvent) (*l
 			switch *streamEvent.Delta.Type {
 			case "input_json_delta":
 				if streamEvent.Delta.PartialJSON != nil {
+					toolCall, ok := state.toolCalls[state.toolIndex]
+					if state.toolIndex < 0 || !ok || toolCall == nil {
+						return nil, fmt.Errorf("received input_json_delta before tool_use start")
+					}
+
 					choice := llm.Choice{
 						Index: 0,
 						Delta: &llm.Message{
@@ -213,7 +226,7 @@ func (s *outboundStream) transformStreamChunk(event *httpclient.StreamEvent) (*l
 							ToolCalls: []llm.ToolCall{
 								{
 									Index: state.toolIndex,
-									ID:    state.toolCalls[state.toolIndex].ID,
+									ID:    toolCall.ID,
 									Type:  "function",
 									Function: llm.FunctionCall{
 										Arguments: *streamEvent.Delta.PartialJSON,

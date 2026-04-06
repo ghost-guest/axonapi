@@ -8,7 +8,6 @@ import (
 )
 
 // PersistenceState holds shared state with channel management and retry capabilities.
-// TODO: move the dependencies out of the state to make it a real state.
 type PersistenceState struct {
 	APIKey *ent.APIKey
 
@@ -27,13 +26,24 @@ type PersistenceState struct {
 	Proxy *httpclient.ProxyConfig
 
 	// OriginalModel is the model after API key profile mapping, used for channel selection
-	OriginalModel string
-	RawRequest    *httpclient.Request
-	LlmRequest    *llm.Request
+	ClientRequestModel string
+	OriginalModel      string
+	RawRequest         *httpclient.Request
+	LlmRequest         *llm.Request
+	InboundAPIFormat   llm.APIFormat
 
 	// Persistence state
 	Request     *ent.Request
 	RequestExec *ent.RequestExecution
+
+	// Retry tracking for a single incoming request.
+	// TotalAttempts counts every outbound execution attempt, including the first one.
+	// TriedCandidateIndices records exhausted/bad channels to avoid hitting the same broken
+	// channel again within the same request, while still keeping candidate ordering compatible
+	// with existing fallback / session-affinity / public-benefit selection.
+	TotalAttempts         int
+	TriedCandidateIndices map[int]struct{}
+	AttemptHistory        []attemptHistoryEntry
 
 	// ChannelModelsCandidates is the primary state for channel selection
 	ChannelModelsCandidates []*ChannelModelsCandidate

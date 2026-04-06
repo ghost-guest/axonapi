@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/looplj/axonhub/llm"
 	"github.com/looplj/axonhub/llm/auth"
+	"github.com/looplj/axonhub/llm/httpclient"
 	"github.com/looplj/axonhub/llm/internal/pkg/xtest"
 	"github.com/looplj/axonhub/llm/streams"
 	"github.com/looplj/axonhub/llm/transformer/shared"
@@ -137,4 +139,43 @@ func TestOutboundTransformer_StreamTransformation_ErrorEvent(t *testing.T) {
 	_, err = streams.All(transformedStream)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "当前订阅套餐暂未开放GPT-6权限")
+}
+
+func TestOutboundTransformer_StreamTransformation_InputJSONDeltaWithoutToolUseStart(t *testing.T) {
+	transformer, err := NewOutboundTransformerWithConfig(&Config{
+		Type:           PlatformDirect,
+		BaseURL:        "https://example.com",
+		APIKeyProvider: auth.NewStaticKeyProvider("test-api-key"),
+	})
+	require.NoError(t, err)
+
+	deltaType := "input_json_delta"
+	partialJSON := `{"query":"ok"}`
+	rawEvent, err := json.Marshal(StreamEvent{
+		Type: "content_block_delta",
+		Delta: &StreamDelta{
+			Type:        &deltaType,
+			PartialJSON: &partialJSON,
+		},
+	})
+	require.NoError(t, err)
+
+	mockStream := streams.SliceStream([]*httpclient.StreamEvent{
+		{
+			Type: "content_block_delta",
+			Data: rawEvent,
+		},
+	})
+
+	ot := transformer.(*OutboundTransformer)
+	ctx := shared.ContextWithTransportScope(t.Context(), shared.TransportScope{
+		BaseURL: ot.config.BaseURL,
+	})
+	transformedStream, err := transformer.TransformStream(ctx, mockStream)
+	require.NoError(t, err)
+
+	responses, err := streams.All(transformedStream)
+	require.Nil(t, responses)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "received input_json_delta before tool_use start")
 }

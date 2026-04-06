@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/looplj/axonhub/internal/server/orchestrator"
 	"github.com/looplj/axonhub/llm"
 	"github.com/looplj/axonhub/llm/httpclient"
 	"github.com/looplj/axonhub/llm/streams"
@@ -224,6 +225,21 @@ func TestWriteSSEStream_NoError(t *testing.T) {
 
 	body := w.Body.String()
 	assert.NotContains(t, body, "event:error")
+}
+
+func TestWriteModelSelectionHeaders(t *testing.T) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+
+	writeModelSelectionHeaders(c, orchestrator.ChatCompletionResult{
+		RequestedModel: "claude-sonnet-4",
+		ActualModel:    "gpt-5.4",
+		FallbackUsed:   true,
+	})
+
+	assert.Equal(t, "claude-sonnet-4", w.Header().Get(headerRequestModel))
+	assert.Equal(t, "gpt-5.4", w.Header().Get(headerActualModel))
+	assert.Equal(t, "true", w.Header().Get(headerFallbackUsed))
 }
 
 func TestFormatStreamError_PlainError(t *testing.T) {

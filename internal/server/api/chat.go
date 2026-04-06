@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-contrib/sse"
 	"github.com/gin-gonic/gin"
@@ -24,6 +25,12 @@ type ChatCompletionHandlers struct {
 	ChatCompletionOrchestrator *orchestrator.ChatCompletionOrchestrator
 	StreamWriter               StreamWriter
 }
+
+const (
+	headerRequestModel = "AH-Request-Model"
+	headerActualModel  = "AH-Actual-Model"
+	headerFallbackUsed = "AH-Fallback-Used"
+)
 
 func NewChatCompletionHandlers(orchestrator *orchestrator.ChatCompletionOrchestrator) *ChatCompletionHandlers {
 	return &ChatCompletionHandlers{
@@ -71,6 +78,7 @@ func (handlers *ChatCompletionHandlers) ChatCompletion(c *gin.Context) {
 
 	if result.ChatCompletion != nil {
 		resp := result.ChatCompletion
+		writeModelSelectionHeaders(c, result)
 
 		contentType := "application/json"
 		if ct := resp.Headers.Get("Content-Type"); ct != "" {
@@ -93,6 +101,7 @@ func (handlers *ChatCompletionHandlers) ChatCompletion(c *gin.Context) {
 		}()
 
 		c.Header("Access-Control-Allow-Origin", "*")
+		writeModelSelectionHeaders(c, result)
 
 		streamWriter := handlers.StreamWriter
 		if streamWriter == nil {
@@ -101,6 +110,16 @@ func (handlers *ChatCompletionHandlers) ChatCompletion(c *gin.Context) {
 
 		streamWriter(c, result.ChatCompletionStream)
 	}
+}
+
+func writeModelSelectionHeaders(c *gin.Context, result orchestrator.ChatCompletionResult) {
+	if result.RequestedModel != "" {
+		c.Header(headerRequestModel, result.RequestedModel)
+	}
+	if result.ActualModel != "" {
+		c.Header(headerActualModel, result.ActualModel)
+	}
+	c.Header(headerFallbackUsed, strconv.FormatBool(result.FallbackUsed))
 }
 
 // StreamErrorFormatter formats a stream error into a JSON-serializable object for SSE error events.

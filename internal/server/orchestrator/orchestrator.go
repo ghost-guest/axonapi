@@ -28,11 +28,9 @@ func NewChatCompletionOrchestrator(
 	promptService *biz.PromptService,
 	quotaService *biz.QuotaService,
 	promptProtectionRuleService *biz.PromptProtectionRuleService,
+	modelCircuitBreaker *biz.ModelCircuitBreaker,
 ) *ChatCompletionOrchestrator {
 	connectionTracker := NewDefaultConnectionTracker(256)
-
-	// Initialize model circuit breaker
-	modelCircuitBreaker := biz.NewModelCircuitBreaker()
 
 	adaptiveLoadBalancer := NewLoadBalancer(systemService, channelService,
 		NewTraceAwareStrategy(requestService),
@@ -130,6 +128,37 @@ func (processor *ChatCompletionOrchestrator) WithProxy(proxy *httpclient.ProxyCo
 type ChatCompletionResult struct {
 	ChatCompletion       *httpclient.Response
 	ChatCompletionStream streams.Stream[*httpclient.StreamEvent]
+	RequestedModel       string
+	ActualModel          string
+	FallbackUsed         bool
+}
+
+func buildModelSelectionResult(state *PersistenceState, outbound *PersistentOutboundTransformer) (string, string, bool) {
+	if state == nil {
+		return "", "", false
+	}
+
+	requestedModel := state.ClientRequestModel
+	if requestedModel == "" {
+		requestedModel = state.OriginalModel
+	}
+
+	actualModel := ""
+	if outbound != nil {
+		actualModel = outbound.GetCurrentModelID()
+	}
+	if actualModel == "" {
+		actualModel = state.OriginalModel
+	}
+
+	effectiveRequestedModel := state.OriginalModel
+	if effectiveRequestedModel == "" {
+		effectiveRequestedModel = requestedModel
+	}
+
+	fallbackUsed := effectiveRequestedModel != "" && actualModel != "" && actualModel != effectiveRequestedModel
+
+	return requestedModel, actualModel, fallbackUsed
 }
 
 func (processor *ChatCompletionOrchestrator) Process(ctx context.Context, request *httpclient.Request) (ChatCompletionResult, error) {
@@ -266,16 +295,24 @@ func (processor *ChatCompletionOrchestrator) Process(ctx context.Context, reques
 		return ChatCompletionResult{}, err
 	}
 
+	requestedModel, actualModel, fallbackUsed := buildModelSelectionResult(state, outbound)
+
 	// Return result based on stream type
 	if result.Stream {
 		return ChatCompletionResult{
 			ChatCompletion:       nil,
 			ChatCompletionStream: result.EventStream,
+			RequestedModel:       requestedModel,
+			ActualModel:          actualModel,
+			FallbackUsed:         fallbackUsed,
 		}, nil
 	}
 
 	return ChatCompletionResult{
 		ChatCompletion:       result.Response,
 		ChatCompletionStream: nil,
+		RequestedModel:       requestedModel,
+		ActualModel:          actualModel,
+		FallbackUsed:         fallbackUsed,
 	}, nil
 }
