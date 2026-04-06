@@ -13,9 +13,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/looplj/axonhub/internal/server/orchestrator"
 	"github.com/looplj/axonhub/llm"
 	"github.com/looplj/axonhub/llm/httpclient"
 	"github.com/looplj/axonhub/llm/streams"
+	"github.com/looplj/axonhub/llm/transformer/anthropic"
+	"github.com/looplj/axonhub/llm/transformer/openai/responses"
 )
 
 func init() {
@@ -283,4 +286,115 @@ func TestFormatStreamError_LlmResponseError_PassesCodeAndRequestID(t *testing.T)
 	assert.Equal(t, "permission_error", errorField["type"])
 	assert.Equal(t, "1311", errorField["code"])
 	assert.Equal(t, "202603112254417d15bd26697445b0", parsed["request_id"])
+}
+
+func TestPrependAnthropicFallbackNoticeToBody_PrependsTextBlock(t *testing.T) {
+	body := []byte(`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"Hello"}],"model":"glm-5.1"}`)
+
+	updated, err := prependAnthropicFallbackNoticeToBody(body, "Current model: glm-5.1\n")
+	require.NoError(t, err)
+
+	assert.Contains(t, string(updated), `Current model: glm-5.1`)
+	assert.Contains(t, string(updated), `Hello`)
+}
+
+func TestPrependResponsesFallbackNoticeToBody_PrependsOutputText(t *testing.T) {
+	body := []byte(`{"id":"resp_1","object":"response","model":"gpt-5.4","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello"}]}]}`)
+
+	updated, err := prependResponsesFallbackNoticeToBody(body, "Current model: gpt-5.4\n")
+	require.NoError(t, err)
+
+	assert.Contains(t, string(updated), `Current model: gpt-5.4`)
+	assert.Contains(t, string(updated), `Hello`)
+}
+
+func TestAnthropicFallbackNoticeStream_PrependsFirstTextDelta(t *testing.T) {
+	stream := &anthropicFallbackNoticeStream{
+		source: streams.SliceStream([]*httpclient.StreamEvent{
+			{
+				Type: "content_block_delta",
+				Data: []byte(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}`),
+			},
+			{
+				Type: "message_stop",
+				Data: []byte(`{"type":"message_stop"}`),
+			},
+		}),
+		notice: "Current model: glm-5.1\n",
+	}
+
+	require.True(t, stream.Next())
+	assert.Contains(t, string(stream.Current().Data), `Current model: glm-5.1\nHello`)
+
+	require.True(t, stream.Next())
+	assert.Equal(t, "message_stop", stream.Current().Type)
+}
+
+func TestResponsesFallbackNoticeStream_PatchesDeltaAndCompleted(t *testing.T) {
+	stream := &responsesFallbackNoticeStream{
+		source: streams.SliceStream([]*httpclient.StreamEvent{
+			{
+				Type: "response.output_text.delta",
+				Data: []byte(`{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"Hello"}`),
+			},
+			{
+				Type: "response.output_text.done",
+				Data: []byte(`{"type":"response.output_text.done","item_id":"msg_1","output_index":0,"content_index":0,"text":"Hello"}`),
+			},
+			{
+				Type: "response.completed",
+				Data: []byte(`{"type":"response.completed","response":{"id":"resp_1","object":"response","model":"gpt-5.4","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello"}]}]}}`),
+			},
+		}),
+		notice: "Current model: gpt-5.4\n",
+	}
+
+	require.True(t, stream.Next())
+	assert.Contains(t, string(stream.Current().Data), `Current model: gpt-5.4\nHello`)
+
+	require.True(t, stream.Next())
+	assert.Contains(t, string(stream.Current().Data), `Current model: gpt-5.4\nHello`)
+
+	require.True(t, stream.Next())
+	assert.Contains(t, string(stream.Current().Data), `Current model: gpt-5.4\nHello`)
+}
+
+func TestAnnotateFallbackResult_AnthropicFallback(t *testing.T) {
+	handlers := &ChatCompletionHandlers{
+		ChatCompletionOrchestrator: &orchestrator.ChatCompletionOrchestrator{
+			Inbound: anthropic.NewInboundTransformer(),
+		},
+	}
+
+	result := annotateFallbackResult(handlers, orchestrator.ChatCompletionResult{
+		ChatCompletion: &httpclient.Response{
+			Body: []byte(`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"Hello"}],"model":"glm-5.1"}`),
+		},
+		RequestedModel: "claude-sonnet-4-6",
+		ActualModel:    "glm-5.1",
+		FallbackUsed:   true,
+	})
+
+	require.NotNil(t, result.ChatCompletion)
+	assert.Contains(t, string(result.ChatCompletion.Body), `Current model: glm-5.1`)
+}
+
+func TestAnnotateFallbackResult_ResponsesFallback(t *testing.T) {
+	handlers := &ChatCompletionHandlers{
+		ChatCompletionOrchestrator: &orchestrator.ChatCompletionOrchestrator{
+			Inbound: responses.NewInboundTransformer(),
+		},
+	}
+
+	result := annotateFallbackResult(handlers, orchestrator.ChatCompletionResult{
+		ChatCompletion: &httpclient.Response{
+			Body: []byte(`{"id":"resp_1","object":"response","model":"gpt-5.4","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello"}]}]}`),
+		},
+		RequestedModel: "codex-mini-latest",
+		ActualModel:    "gpt-5.4",
+		FallbackUsed:   true,
+	})
+
+	require.NotNil(t, result.ChatCompletion)
+	assert.Contains(t, string(result.ChatCompletion.Body), `Current model: gpt-5.4`)
 }

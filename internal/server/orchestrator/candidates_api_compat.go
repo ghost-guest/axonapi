@@ -34,6 +34,14 @@ func (s *APICompatibilitySelector) Select(ctx context.Context, req *llm.Request)
 		return candidates, nil
 	}
 
+	// Preserve the explicit public-benefit fallback sequence order when later
+	// models have already been materialized into the candidate list. Hard
+	// filtering here would otherwise discard earlier fallback models such as
+	// gpt-5.4 for Anthropic requests.
+	if hasFallbackModelCandidates(candidates) {
+		return candidates, nil
+	}
+
 	compatible := lo.Filter(candidates, func(candidate *ChannelModelsCandidate, _ int) bool {
 		if candidate == nil || candidate.Channel == nil {
 			return false
@@ -47,6 +55,21 @@ func (s *APICompatibilitySelector) Select(ctx context.Context, req *llm.Request)
 	}
 
 	return candidates, nil
+}
+
+func hasFallbackModelCandidates(candidates []*ChannelModelsCandidate) bool {
+	for _, candidate := range candidates {
+		if candidate == nil {
+			continue
+		}
+		for _, entry := range candidate.Models {
+			if entry.Source == "fallback" {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 func channelSupportsAPIFormat(ty channel.Type, apiFormat llm.APIFormat) bool {

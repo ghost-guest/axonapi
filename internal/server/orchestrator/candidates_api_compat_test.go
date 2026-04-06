@@ -63,3 +63,34 @@ func TestAPICompatibilitySelector_Select_FallsBackWhenNoCompatibleChannels(t *te
 	require.Len(t, result, 1)
 	require.Equal(t, "responses", result[0].Channel.Name)
 }
+
+func TestAPICompatibilitySelector_Select_PreservesExplicitFallbackOrder(t *testing.T) {
+	selector := WithAPICompatibilitySelector(&stubCandidateSelector{
+		byModel: map[string][]*ChannelModelsCandidate{
+			"claude-sonnet-4-6": {
+				{
+					Channel: &biz.Channel{Channel: &ent.Channel{
+						ID:   1,
+						Name: "gpt-responses",
+						Type: channel.TypeOpenaiResponses,
+					}},
+					Models: []biz.ChannelModelEntry{{RequestModel: "gpt-5.4", ActualModel: "gpt-5.4", Source: "fallback"}},
+				},
+				{
+					Channel: &biz.Channel{Channel: &ent.Channel{
+						ID:   2,
+						Name: "glm-anthropic",
+						Type: channel.TypeAnthropic,
+					}},
+					Models: []biz.ChannelModelEntry{{RequestModel: "glm-5.1", ActualModel: "glm-5.1", Source: "fallback"}},
+				},
+			},
+		},
+	}, llm.APIFormatAnthropicMessage)
+
+	result, err := selector.Select(context.Background(), &llm.Request{Model: "claude-sonnet-4-6"})
+	require.NoError(t, err)
+	require.Len(t, result, 2)
+	require.Equal(t, "gpt-responses", result[0].Channel.Name)
+	require.Equal(t, "glm-anthropic", result[1].Channel.Name)
+}

@@ -76,6 +76,8 @@ func (handlers *ChatCompletionHandlers) ChatCompletion(c *gin.Context) {
 		return
 	}
 
+	result = annotateFallbackResult(handlers, result)
+
 	if result.ChatCompletion != nil {
 		resp := result.ChatCompletion
 		writeModelSelectionHeaders(c, result)

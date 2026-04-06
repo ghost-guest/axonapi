@@ -19,6 +19,8 @@ type PublicBenefitFallbackSelector struct {
 	apiFormat     llm.APIFormat
 }
 
+const publicBenefitFallbackPriorityStep = 1_000_000
+
 func WithPublicBenefitFallbackSelector(
 	wrapped CandidateSelector,
 	systemService PublicBenefitModelResolver,
@@ -67,17 +69,18 @@ func (s *PublicBenefitFallbackSelector) Select(ctx context.Context, req *llm.Req
 		}
 
 		for _, candidate := range candidates {
+			models := modelEntriesForSequence(candidate.Models, sequenceIndex)
 			key := candidateKeyForMerge(candidate, sequenceIndex)
 			if idx, ok := indexByKey[key]; ok {
 				existing := merged[idx]
-				existing.Models = appendUniqueModelEntries(existing.Models, candidate.Models)
+				existing.Models = appendUniqueModelEntries(existing.Models, models)
 				continue
 			}
 
 			copied := &ChannelModelsCandidate{
 				Channel:  candidate.Channel,
-				Priority: candidate.Priority,
-				Models:   append([]biz.ChannelModelEntry(nil), candidate.Models...),
+				Priority: priorityForModelSequence(candidate.Priority, sequenceIndex),
+				Models:   models,
 			}
 			indexByKey[key] = len(merged)
 			merged = append(merged, copied)
@@ -100,12 +103,33 @@ func (s *PublicBenefitFallbackSelector) Select(ctx context.Context, req *llm.Req
 	return merged, nil
 }
 
+func priorityForModelSequence(basePriority int, sequenceIndex int) int {
+	if sequenceIndex <= 0 {
+		return basePriority
+	}
+
+	return basePriority + sequenceIndex*publicBenefitFallbackPriorityStep
+}
+
 func candidateKeyForMerge(candidate *ChannelModelsCandidate, sequenceIndex int) string {
 	if candidate == nil || candidate.Channel == nil {
 		return ""
 	}
 
 	return fmt.Sprintf("%d:%d:%d", sequenceIndex, candidate.Channel.ID, candidate.Priority)
+}
+
+func modelEntriesForSequence(models []biz.ChannelModelEntry, sequenceIndex int) []biz.ChannelModelEntry {
+	copied := append([]biz.ChannelModelEntry(nil), models...)
+	if sequenceIndex <= 0 {
+		return copied
+	}
+
+	for i := range copied {
+		copied[i].Source = "fallback"
+	}
+
+	return copied
 }
 
 func appendUniqueModelEntries(existing []biz.ChannelModelEntry, incoming []biz.ChannelModelEntry) []biz.ChannelModelEntry {

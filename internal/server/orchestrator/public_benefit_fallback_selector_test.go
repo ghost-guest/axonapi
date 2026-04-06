@@ -72,8 +72,58 @@ func TestPublicBenefitFallbackSelector_Select_AppendsFallbackCandidatesAfterDire
 	require.Len(t, result[0].Models, 1)
 	require.Equal(t, "claude-sonnet", result[0].Models[0].ActualModel)
 	require.Equal(t, "gpt-channel", result[1].Channel.Name)
+	require.Equal(t, publicBenefitFallbackPriorityStep, result[1].Priority)
 	require.Len(t, result[1].Models, 1)
 	require.Equal(t, "gpt-5.4", result[1].Models[0].ActualModel)
+}
+
+func TestPublicBenefitFallbackSelector_Select_AssignsLaterFallbacksLowerPriorityGroups(t *testing.T) {
+	firstFallbackChannel := &biz.Channel{Channel: &ent.Channel{ID: 2, Name: "gpt-fallback"}}
+	secondFallbackChannel := &biz.Channel{Channel: &ent.Channel{ID: 3, Name: "kimi-fallback"}}
+
+	selector := WithPublicBenefitFallbackSelector(
+		&stubCandidateSelector{
+			byModel: map[string][]*ChannelModelsCandidate{
+				"claude-sonnet": {
+					{
+						Channel:  &biz.Channel{Channel: &ent.Channel{ID: 1, Name: "claude-channel"}},
+						Priority: 0,
+						Models: []biz.ChannelModelEntry{
+							{RequestModel: "claude-sonnet", ActualModel: "claude-sonnet", Source: "direct"},
+						},
+					},
+				},
+				"gpt-5.4": {
+					{
+						Channel:  firstFallbackChannel,
+						Priority: 0,
+						Models: []biz.ChannelModelEntry{
+							{RequestModel: "gpt-5.4", ActualModel: "gpt-5.4", Source: "fallback"},
+						},
+					},
+				},
+				"Kimi-K2.5": {
+					{
+						Channel:  secondFallbackChannel,
+						Priority: 0,
+						Models: []biz.ChannelModelEntry{
+							{RequestModel: "Kimi-K2.5", ActualModel: "Kimi-K2.5", Source: "fallback"},
+						},
+					},
+				},
+			},
+			errs: map[string]error{},
+		},
+		&stubPublicBenefitResolver{sequence: []string{"claude-sonnet", "gpt-5.4", "Kimi-K2.5"}},
+		llm.APIFormatAnthropicMessage,
+	)
+
+	result, err := selector.Select(context.Background(), &llm.Request{Model: "claude-sonnet"})
+	require.NoError(t, err)
+	require.Len(t, result, 3)
+	require.Equal(t, 0, result[0].Priority)
+	require.Equal(t, publicBenefitFallbackPriorityStep, result[1].Priority)
+	require.Equal(t, publicBenefitFallbackPriorityStep*2, result[2].Priority)
 }
 
 func TestPublicBenefitFallbackSelector_Select_SkipsInvalidFallbackModel(t *testing.T) {
